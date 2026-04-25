@@ -32,8 +32,8 @@ endif()
 find_package(Boost REQUIRED COMPONENTS system)
 
 # ===================== 编译目标 =====================
-add_executable(server server.cpp)
-add_executable(client client.cpp)
+add_executable(server src/server.cpp)
+add_executable(client src/client.cpp)
 
 # 链接库
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
