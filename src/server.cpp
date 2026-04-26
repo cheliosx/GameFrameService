@@ -31,7 +31,7 @@ class RoomManager {
 public:
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
-    void broadcast(const std::string& room_id, const std::string& sender_name, const std::string& content);
+    void broadcast(const std::string& room_id, std::uint64_t message_id, const std::string& sender_name, const std::string& content);
     std::string server_info() const;
 
 private:
@@ -54,6 +54,26 @@ double read_process_rss_mb() {
         }
     }
     return 0.0;
+}
+
+std::pair<std::uint64_t, std::string> parse_message(const std::string& raw_message) {
+    constexpr const char* prefix = "mid=";
+    if (raw_message.rfind(prefix, 0) != 0) {
+        return {0, raw_message};
+    }
+
+    const auto separator = raw_message.find(';');
+    if (separator == std::string::npos) {
+        return {0, raw_message};
+    }
+
+    const std::string id_part = raw_message.substr(4, separator - 4);
+    try {
+        const auto message_id = static_cast<std::uint64_t>(std::stoull(id_part));
+        return {message_id, raw_message.substr(separator + 1)};
+    } catch (...) {
+        return {0, raw_message};
+    }
 }
 } // namespace
 
@@ -110,24 +130,25 @@ private:
 
             std::string msg = beast::buffers_to_string(self->buffer_.data());
             self->buffer_.consume(self->buffer_.size());
+            const auto [message_id, message_content] = parse_message(msg);
 
             if (!self->joined_room_) {
-                if (msg.empty()) {
-                    self->deliver("房间ID不能为空，请重新输入。\n示例：1001");
+                if (message_content.empty()) {
+                    self->deliver("[mid=0] 房间ID不能为空，请重新输入。\n示例：1001");
                 } else {
-                    self->room_id_ = msg;
+                    self->room_id_ = message_content;
                     self->joined_room_ = true;
                     self->room_manager_->join(self->room_id_, self, self->player_);
 
-                    self->deliver("成功进入房间 " + self->room_id_ +
+                    self->deliver("[mid=0] 成功进入房间 " + self->room_id_ +
                                   "，你的身份是 " + self->player_.name +
                                   "，现在你发送的消息会广播给房间内所有玩家。");
                 }
             } else {
-                if (msg == "/server_info") {
-                    self->deliver(self->room_manager_->server_info());
+                if (message_content == "/server_info") {
+                    self->deliver("[mid=" + std::to_string(message_id) + "]\n" + self->room_manager_->server_info());
                 } else {
-                    self->room_manager_->broadcast(self->room_id_, self->player_.name, msg);
+                    self->room_manager_->broadcast(self->room_id_, message_id, self->player_.name, message_content);
                 }
             }
 
@@ -179,7 +200,7 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
     room.id = room_id;
     room.players.push_back(player);
 
-    broadcast(room_id, "系统", "有玩家进入房间 " + room_id);
+    broadcast(room_id, 0, "系统", "有玩家进入房间 " + room_id);
 }
 
 void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
@@ -205,10 +226,13 @@ void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Sessio
         return;
     }
 
-    broadcast(room_id, "系统", "有玩家离开房间 " + room_id);
+    broadcast(room_id, 0, "系统", "有玩家离开房间 " + room_id);
 }
 
-void RoomManager::broadcast(const std::string& room_id, const std::string& sender_name, const std::string& content) {
+void RoomManager::broadcast(const std::string& room_id,
+                            std::uint64_t message_id,
+                            const std::string& sender_name,
+                            const std::string& content) {
     auto session_it = sessions_by_room_.find(room_id);
     if (session_it == sessions_by_room_.end()) {
         return;
@@ -219,7 +243,7 @@ void RoomManager::broadcast(const std::string& room_id, const std::string& sende
         room_it->second.received_messages.push_back(Message{MessageType::Chat, Message::now(), content});
     }
 
-    const std::string message = "[" + Message::now() + "] " + sender_name + ": " + content;
+    const std::string message = "[mid=" + std::to_string(message_id) + "][" + Message::now() + "] " + sender_name + ": " + content;
     for (const auto& session : session_it->second) {
         session->deliver(message);
     }

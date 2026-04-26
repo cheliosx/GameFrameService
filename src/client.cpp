@@ -37,10 +37,11 @@ int main() {
         ws.handshake(host + ":" + port, "/");
 
         // 连接后默认进入房间 1
-        ws.write(asio::buffer(std::string("1")));
+        ws.write(asio::buffer(std::string("mid=0;1")));
 
         std::atomic<bool> running{true};
         std::mutex output_mutex;
+        std::uint64_t next_message_id = 1;
 
         std::thread receiver([&ws, &running, &output_mutex] {
             try {
@@ -90,7 +91,8 @@ int main() {
             }
 
             const std::string payload = "[角色" + role_id + "] " + input_msg;
-            ws.write(asio::buffer(payload));
+            const std::string encoded_payload = "mid=" + std::to_string(next_message_id++) + ";" + payload;
+            ws.write(asio::buffer(encoded_payload));
         }
 
         running.store(false);
