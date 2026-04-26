@@ -27,6 +27,7 @@
 #include "models/message.hpp"
 #include "models/protocol.hpp"
 #include "models/room.hpp"
+#include "redis_client.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -39,77 +40,6 @@ struct ServerConfig {
     std::string redis_host = "127.0.0.1";
     unsigned short redis_port = 6379;
     std::string redis_password = "123456";
-};
-
-class RedisClient {
-public:
-    RedisClient(std::string host, unsigned short port, std::string password)
-        : host_(std::move(host)), port_(port), password_(std::move(password)) {}
-
-    std::string get_room_secret(const std::string& room_id) {
-        asio::io_context io;
-        tcp::resolver resolver(io);
-        tcp::socket socket(io);
-        asio::connect(socket, resolver.resolve(host_, std::to_string(port_)));
-
-        if (!password_.empty()) {
-            write_command(socket, {"AUTH", password_});
-            expect_simple_ok(socket);
-        }
-
-        write_command(socket, {"GET", "room:secret:" + room_id});
-        return read_bulk_string(socket);
-    }
-
-private:
-    static void write_command(tcp::socket& socket, const std::vector<std::string>& args) {
-        std::ostringstream cmd;
-        cmd << '*' << args.size() << "\r\n";
-        for (const auto& arg : args) {
-            cmd << '$' << arg.size() << "\r\n" << arg << "\r\n";
-        }
-        const auto text = cmd.str();
-        asio::write(socket, asio::buffer(text));
-    }
-
-    static std::string read_line(tcp::socket& socket) {
-        asio::streambuf buf;
-        asio::read_until(socket, buf, "\r\n");
-        std::istream is(&buf);
-        std::string line;
-        std::getline(is, line);
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        return line;
-    }
-
-    static void expect_simple_ok(tcp::socket& socket) {
-        const auto line = read_line(socket);
-        if (line.empty() || line[0] != '+') {
-            throw std::runtime_error("Redis AUTH返回异常: " + line);
-        }
-    }
-
-    static std::string read_bulk_string(tcp::socket& socket) {
-        const auto header = read_line(socket);
-        if (header.empty() || header[0] != '$') {
-            throw std::runtime_error("Redis GET返回异常: " + header);
-        }
-
-        const int len = std::stoi(header.substr(1));
-        if (len < 0) {
-            throw std::runtime_error("房间密钥不存在");
-        }
-
-        std::vector<char> data(static_cast<std::size_t>(len + 2));
-        asio::read(socket, asio::buffer(data));
-        return std::string(data.begin(), data.begin() + len);
-    }
-
-    std::string host_;
-    unsigned short port_;
-    std::string password_;
 };
 
 class Session;

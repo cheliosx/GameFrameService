@@ -32,7 +32,7 @@ endif()
 find_package(Boost REQUIRED COMPONENTS system)
 
 # ===================== 编译目标 =====================
-add_executable(ws_server src/server.cpp)
+add_executable(ws_server src/server.cpp src/redis_client.cpp)
 add_executable(ws_client src/client.cpp)
 add_executable(ws_position_test src/testing_position.cpp)
 add_executable(ws_replay_test src/testing_replay.cpp)

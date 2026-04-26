@@ -50,6 +50,8 @@ cp server.conf.example server.conf
 3. 客户端发送 `JoinRoomAuth`（协议号 5），body 包含 `room_id` 和 `md5`。
 4. 服务端从 Redis 读取 `room:secret:<room_id>`，校验通过后玩家正式入房。
 
+> Redis 连接在服务启动时建立并复用，避免每次鉴权都重新建连。
+
 ## 测试房间
 
 请先在 Redis 中准备测试房间密钥：
