@@ -38,9 +38,11 @@ int main() {
         std::vector<std::uint8_t> bytes(asio::buffers_begin(data), asio::buffers_end(data));
         const auto decoded = protocol::decode(bytes);
 
-        if (decoded.message_type == MessageType::Chat) {
-            std::cout << "[position test] response mid=" << decoded.message_id
-                      << ", text=" << protocol::decode_chat_body(decoded.body) << std::endl;
+        if (decoded.message_type == MessageType::SetPosition) {
+            const auto [frame_id, payload] = protocol::unwrap_frame_body(decoded.body);
+            const auto [x, y] = protocol::decode_position_body(payload);
+            std::cout << "[position test] response mid=" << decoded.message_id << ", frame=" << frame_id
+                      << ", x=" << x << ", y=" << y << std::endl;
         }
 
         ws.close(websocket::close_code::normal);

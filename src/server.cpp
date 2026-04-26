@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <fstream>
 #include <iomanip>
@@ -32,14 +33,25 @@ class Session;
 
 class RoomManager {
 public:
+    explicit RoomManager(asio::io_context& io_context) : io_context_(io_context) {}
+
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
-    void broadcast_raw(const std::string& room_id, const std::vector<std::uint8_t>& payload);
+    void broadcast_with_frame(const std::string& room_id,
+                              std::uint32_t message_id,
+                              MessageType type,
+                              const std::vector<std::uint8_t>& payload);
+    std::uint32_t current_frame_id(const std::string& room_id) const;
     std::string server_info() const;
 
 private:
+    void start_room_broadcast(const std::string& room_id);
+    void tick_room_broadcast(const std::string& room_id);
+
+    asio::io_context& io_context_;
     std::unordered_map<std::string, std::unordered_set<std::shared_ptr<Session>>> sessions_by_room_;
     std::unordered_map<std::string, Room> room_states_;
+    std::unordered_map<std::string, std::shared_ptr<asio::steady_timer>> room_timers_;
 };
 
 namespace {
@@ -130,7 +142,9 @@ private:
                 const auto system_info_body = std::vector<std::uint8_t>(info_text.begin(), info_text.end());
                 self->deliver(protocol::encode(message_id, MessageType::SystemInfo, system_info_body));
             } else {
-                self->room_manager_->broadcast_raw(self->room_id_, bytes);
+                const std::vector<std::uint8_t> body(bytes.begin() + 6, bytes.end());
+                self->room_manager_->broadcast_with_frame(
+                    self->room_id_, message_id, static_cast<MessageType>(message_type), body);
             }
 
             self->do_read();
@@ -180,6 +194,10 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
     auto& room = room_states_[room_id];
     room.id = room_id;
     room.players.push_back(player);
+
+    if (room_timers_.find(room_id) == room_timers_.end()) {
+        start_room_broadcast(room_id);
+    }
 }
 
 void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
@@ -202,18 +220,72 @@ void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Sessio
     if (session_it->second.empty()) {
         sessions_by_room_.erase(session_it);
         room_states_.erase(room_id);
+        auto timer_it = room_timers_.find(room_id);
+        if (timer_it != room_timers_.end()) {
+            timer_it->second->cancel();
+            room_timers_.erase(timer_it);
+        }
     }
 }
 
-void RoomManager::broadcast_raw(const std::string& room_id, const std::vector<std::uint8_t>& payload) {
+void RoomManager::broadcast_with_frame(const std::string& room_id,
+                                       std::uint32_t message_id,
+                                       MessageType type,
+                                       const std::vector<std::uint8_t>& payload) {
     auto session_it = sessions_by_room_.find(room_id);
     if (session_it == sessions_by_room_.end()) {
         return;
     }
 
+    const auto frame_id = current_frame_id(room_id);
+    const auto wrapped_body = protocol::wrap_with_frame(frame_id, payload);
+    const auto encoded = protocol::encode(message_id, type, wrapped_body);
+
     for (const auto& session : session_it->second) {
-        session->deliver(payload);
+        session->deliver(encoded);
     }
+}
+
+std::uint32_t RoomManager::current_frame_id(const std::string& room_id) const {
+    const auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
+        return 0;
+    }
+    return room_it->second.frame_id;
+}
+
+void RoomManager::start_room_broadcast(const std::string& room_id) {
+    auto timer = std::make_shared<asio::steady_timer>(io_context_);
+    room_timers_[room_id] = timer;
+    tick_room_broadcast(room_id);
+}
+
+void RoomManager::tick_room_broadcast(const std::string& room_id) {
+    auto timer_it = room_timers_.find(room_id);
+    if (timer_it == room_timers_.end()) {
+        return;
+    }
+
+    auto timer = timer_it->second;
+    timer->expires_after(std::chrono::seconds(3));
+    timer->async_wait([this, room_id](const beast::error_code& ec) {
+        if (ec) {
+            return;
+        }
+
+        auto room_it = room_states_.find(room_id);
+        if (room_it == room_states_.end()) {
+            return;
+        }
+
+        const auto frame_id = room_it->second.frame_id;
+        const std::string text = "房间定时广播，frame_id=" + std::to_string(frame_id);
+        const auto payload = std::vector<std::uint8_t>(text.begin(), text.end());
+        broadcast_with_frame(room_id, 0, MessageType::Chat, payload);
+
+        room_it->second.frame_id += 1;
+        tick_room_broadcast(room_id);
+    });
 }
 
 std::string RoomManager::server_info() const {
@@ -246,7 +318,7 @@ std::string RoomManager::server_info() const {
 class Server {
 public:
     Server(asio::io_context& io_context, unsigned short port)
-        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)), room_manager_(std::make_shared<RoomManager>()) {
+        : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)), room_manager_(std::make_shared<RoomManager>(io_context)) {
         do_accept();
     }
 
