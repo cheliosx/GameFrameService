@@ -1,10 +1,14 @@
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/uuid/detail/md5.hpp>
 
 #include <atomic>
+#include <cstdlib>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +19,21 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 using tcp = asio::ip::tcp;
+
+std::string md5_hex(const std::string& text) {
+    boost::uuids::detail::md5 hash;
+    boost::uuids::detail::md5::digest_type digest;
+    hash.process_bytes(text.data(), text.size());
+    hash.get_digest(digest);
+
+    const auto* bytes = reinterpret_cast<const std::uint8_t*>(&digest);
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (std::size_t i = 0; i < sizeof(digest); ++i) {
+        oss << std::setw(2) << static_cast<int>(bytes[i]);
+    }
+    return oss.str();
+}
 
 void print_frame(const Frame& frame) {
     std::cout << "\n[帧广播] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
@@ -37,14 +56,15 @@ int main() {
         std::string role_id;
         std::cout << "请输入角色ID: ";
         std::getline(std::cin, role_id);
-
         if (role_id.empty()) {
             std::cerr << "❌ 角色ID不能为空" << std::endl;
             return 1;
         }
 
-        asio::io_context io_context;
+        const std::string room_id = "1";
+        const std::string test_secret = "123456";
 
+        asio::io_context io_context;
         const std::string host = "127.0.0.1";
         const std::string port = "8888";
 
@@ -54,12 +74,39 @@ int main() {
         websocket::stream<tcp::socket> ws(io_context);
         asio::connect(ws.next_layer(), endpoints);
         ws.handshake(host + ":" + port, "/");
-
         ws.binary(true);
+
+        std::uint32_t next_message_id = 1;
+
+        beast::flat_buffer challenge_buf;
+        ws.read(challenge_buf);
+        const auto challenge_data = challenge_buf.data();
+        std::vector<std::uint8_t> challenge_bytes(asio::buffers_begin(challenge_data), asio::buffers_end(challenge_data));
+        const auto challenge_msg = protocol::decode(challenge_bytes);
+        if (challenge_msg.protocol_type != ProtocolType::JoinRoomChallenge) {
+            std::cerr << "❌ 未收到入房挑战协议" << std::endl;
+            return 1;
+        }
+
+        const std::uint64_t timestamp_ms = protocol::decode_join_room_challenge_body(challenge_msg.body);
+        const std::string md5 = md5_hex(std::to_string(timestamp_ms) + test_secret);
+        const auto join_auth = protocol::encode_join_room_auth(next_message_id++, room_id, md5);
+        ws.write(asio::buffer(join_auth));
+
+        beast::flat_buffer join_result_buf;
+        ws.read(join_result_buf);
+        const auto join_data = join_result_buf.data();
+        std::vector<std::uint8_t> join_bytes(asio::buffers_begin(join_data), asio::buffers_end(join_data));
+        const auto join_result = protocol::decode(join_bytes);
+        if (join_result.protocol_type != ProtocolType::SystemInfo) {
+            std::cerr << "❌ 入房失败: " << protocol::decode_chat_payload(join_result.body) << std::endl;
+            return 1;
+        }
+
+        std::cout << "✅ 入房成功: " << protocol::decode_system_info_body(join_result.body) << std::endl;
 
         std::atomic<bool> running{true};
         std::mutex output_mutex;
-        std::uint32_t next_message_id = 1;
 
         std::thread receiver([&ws, &running, &output_mutex] {
             try {
@@ -94,7 +141,7 @@ int main() {
 
         {
             std::lock_guard<std::mutex> lock(output_mutex);
-            std::cout << "✅ 角色[" << role_id << "]已连接并进入房间 1，输入聊天消息（输入 exit 退出）\n" << std::endl;
+            std::cout << "✅ 角色[" << role_id << "]已连接并通过鉴权进入房间 1，输入聊天消息（输入 exit 退出）\n" << std::endl;
         }
 
         std::string input_msg;
