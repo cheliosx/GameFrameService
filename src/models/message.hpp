@@ -6,15 +6,19 @@
 #include <sstream>
 #include <string>
 
-enum class MessageType : std::uint16_t {
-    SystemInfo = 0,
+enum class ProtocolType : std::uint16_t {
+    SystemInfo = 1,
+    SendInfo = 2,
+    ReplayFrames = 3
+};
+
+enum class InfoType : std::uint16_t {
     Chat = 1,
-    SetPosition = 2,
-    FrameData = 3
+    Position = 2
 };
 
 struct Message {
-    MessageType type = MessageType::Chat;
+    InfoType type = InfoType::Chat;
     std::string sent_at;
     std::string content;
 

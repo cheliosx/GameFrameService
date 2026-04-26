@@ -20,14 +20,12 @@ void print_frame(const Frame& frame) {
     std::cout << "\n[帧广播] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
     for (const auto& op : frame.operations) {
         std::cout << "  - op mid=" << op.message_id << ", user=" << op.user_id
-                  << ", type=" << static_cast<std::uint16_t>(op.message_type);
-        if (op.message_type == MessageType::Chat) {
-            std::cout << ", chat=" << protocol::decode_chat_body(op.payload);
-        } else if (op.message_type == MessageType::SetPosition) {
-            const auto [x, y] = protocol::decode_position_body(op.payload);
+                  << ", type=" << static_cast<std::uint16_t>(op.info_type);
+        if (op.info_type == InfoType::Chat) {
+            std::cout << ", chat=" << protocol::decode_chat_payload(op.payload);
+        } else if (op.info_type == InfoType::Position) {
+            const auto [x, y] = protocol::decode_position_payload(op.payload);
             std::cout << ", pos=(" << x << ", " << y << ")";
-        } else if (op.message_type == MessageType::SystemInfo) {
-            std::cout << ", system_info=" << protocol::decode_chat_body(op.payload);
         }
         std::cout << std::endl;
     }
@@ -74,21 +72,15 @@ int main() {
                     const auto decoded = protocol::decode(bytes);
 
                     std::lock_guard<std::mutex> lock(output_mutex);
-                    if (decoded.message_type == MessageType::SystemInfo) {
+                    if (decoded.protocol_type == ProtocolType::SystemInfo) {
                         std::cout << "\n[系统信息][mid=" << decoded.message_id << "] "
-                                  << protocol::decode_chat_body(decoded.body)
+                                  << protocol::decode_system_info_body(decoded.body)
                                   << "\n-------------------------" << std::endl;
-                    } else if (decoded.message_type == MessageType::FrameData) {
-                        const auto frame = protocol::deserialize_frame(decoded.body);
-                        print_frame(frame);
-                    } else if (decoded.message_type == MessageType::Chat) {
-                        std::cout << "\n[收到][mid=" << decoded.message_id << "] "
-                                  << protocol::decode_chat_body(decoded.body)
-                                  << "\n-------------------------" << std::endl;
-                    } else if (decoded.message_type == MessageType::SetPosition) {
-                        const auto [x, y] = protocol::decode_position_body(decoded.body);
-                        std::cout << "\n[收到位置][mid=" << decoded.message_id << "] x=" << x << ", y=" << y
-                                  << "\n-------------------------" << std::endl;
+                    } else if (decoded.protocol_type == ProtocolType::ReplayFrames) {
+                        const auto frames = protocol::deserialize_frames(decoded.body);
+                        for (const auto& frame : frames) {
+                            print_frame(frame);
+                        }
                     }
                 }
             } catch (const std::exception& e) {

@@ -8,7 +8,7 @@
 struct FrameOperation {
     std::uint32_t message_id = 0;
     std::uint64_t user_id = 0;
-    MessageType message_type = MessageType::Chat;
+    InfoType info_type = InfoType::Chat;
     std::vector<std::uint8_t> payload;
 };
 

@@ -40,13 +40,14 @@ public:
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
     void broadcast_with_frame(const std::string& room_id,
                               std::uint32_t message_id,
-                              MessageType type,
+                              ProtocolType protocol_type,
                               const std::vector<std::uint8_t>& payload);
     void enqueue_operation(const std::string& room_id,
                            std::uint32_t message_id,
                            std::uint64_t user_id,
-                           MessageType type,
+                           InfoType info_type,
                            const std::vector<std::uint8_t>& payload);
+    std::vector<Frame> get_frames_after(const std::string& room_id, std::uint32_t frame_id, std::uint32_t count) const;
     std::string server_info() const;
 
 private:
@@ -140,16 +141,19 @@ private:
             }
 
             const std::uint32_t message_id = protocol::read_u32(bytes, 0);
-            const std::uint16_t message_type = protocol::read_u16(bytes, 4);
+            const auto protocol_type = static_cast<ProtocolType>(protocol::read_u16(bytes, 4));
 
-            if (message_type == static_cast<std::uint16_t>(MessageType::SystemInfo)) {
-                const std::string info_text = self->room_manager_->server_info();
-                const auto system_info_body = std::vector<std::uint8_t>(info_text.begin(), info_text.end());
-                self->deliver(protocol::encode(message_id, MessageType::SystemInfo, system_info_body));
-            } else {
-                const std::vector<std::uint8_t> body(bytes.begin() + 6, bytes.end());
+            const std::vector<std::uint8_t> body(bytes.begin() + 6, bytes.end());
+            if (protocol_type == ProtocolType::SystemInfo) {
+                self->deliver(protocol::encode_system_info(message_id, self->room_manager_->server_info()));
+            } else if (protocol_type == ProtocolType::SendInfo) {
+                const auto [info_type, payload] = protocol::decode_send_info_body(body);
                 self->room_manager_->enqueue_operation(
-                    self->room_id_, message_id, self->player_.id, static_cast<MessageType>(message_type), body);
+                    self->room_id_, message_id, self->player_.id, info_type, payload);
+            } else if (protocol_type == ProtocolType::ReplayFrames) {
+                const auto [start_frame_id, count] = protocol::decode_replay_request_body(body);
+                const auto frames = self->room_manager_->get_frames_after(self->room_id_, start_frame_id, count);
+                self->deliver(protocol::encode_replay_response(message_id, frames));
             }
 
             self->do_read();
@@ -238,14 +242,14 @@ void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Sessio
 
 void RoomManager::broadcast_with_frame(const std::string& room_id,
                                        std::uint32_t message_id,
-                                       MessageType type,
+                                       ProtocolType protocol_type,
                                        const std::vector<std::uint8_t>& payload) {
     auto session_it = sessions_by_room_.find(room_id);
     if (session_it == sessions_by_room_.end()) {
         return;
     }
 
-    const auto encoded = protocol::encode(message_id, type, payload);
+    const auto encoded = protocol::encode(message_id, protocol_type, payload);
 
     for (const auto& session : session_it->second) {
         session->deliver(encoded);
@@ -255,7 +259,7 @@ void RoomManager::broadcast_with_frame(const std::string& room_id,
 void RoomManager::enqueue_operation(const std::string& room_id,
                                     std::uint32_t message_id,
                                     std::uint64_t user_id,
-                                    MessageType type,
+                                    InfoType info_type,
                                     const std::vector<std::uint8_t>& payload) {
     const auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end()) {
@@ -265,11 +269,31 @@ void RoomManager::enqueue_operation(const std::string& room_id,
     auto& operations = room_it->second.current_frame.operations;
     operations.erase(std::remove_if(operations.begin(),
                                     operations.end(),
-                                    [type, user_id](const FrameOperation& op) {
-                                        return op.message_type == type && op.user_id == user_id;
+                                    [info_type, user_id](const FrameOperation& op) {
+                                        return op.info_type == info_type && op.user_id == user_id;
                                     }),
                      operations.end());
-    operations.push_back(FrameOperation{message_id, user_id, type, payload});
+    operations.push_back(FrameOperation{message_id, user_id, info_type, payload});
+}
+
+std::vector<Frame> RoomManager::get_frames_after(const std::string& room_id,
+                                                 std::uint32_t frame_id,
+                                                 std::uint32_t count) const {
+    std::vector<Frame> result;
+    const auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end() || count == 0) {
+        return result;
+    }
+
+    for (const auto& frame : room_it->second.received_messages) {
+        if (frame.frame_id > frame_id) {
+            result.push_back(frame);
+            if (result.size() >= count) {
+                break;
+            }
+        }
+    }
+    return result;
 }
 
 void RoomManager::start_room_broadcast(const std::string& room_id) {
@@ -298,8 +322,7 @@ void RoomManager::tick_room_broadcast(const std::string& room_id) {
 
         auto& room = room_it->second;
         const Frame completed_frame = room.current_frame;
-        const auto frame_payload = protocol::serialize_frame(completed_frame);
-        broadcast_with_frame(room_id, 0, MessageType::FrameData, frame_payload);
+        broadcast_with_frame(room_id, 0, ProtocolType::ReplayFrames, protocol::serialize_frames({completed_frame}));
 
         room.received_messages.push_back(completed_frame);
         room.current_frame.frame_id += 1;
