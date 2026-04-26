@@ -5,11 +5,16 @@
 #include <algorithm>
 #include <atomic>
 #include <deque>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include "models/message.hpp"
 #include "models/player.hpp"
@@ -27,11 +32,30 @@ public:
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
     void broadcast(const std::string& room_id, const std::string& sender_name, const std::string& content);
+    std::string server_info() const;
 
 private:
     std::unordered_map<std::string, std::unordered_set<std::shared_ptr<Session>>> sessions_by_room_;
     std::unordered_map<std::string, Room> room_states_;
 };
+
+namespace {
+double read_process_rss_mb() {
+    std::ifstream status_file("/proc/self/status");
+    std::string line;
+    while (std::getline(status_file, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::istringstream iss(line);
+            std::string key;
+            double kb = 0.0;
+            std::string unit;
+            iss >> key >> kb >> unit;
+            return kb / 1024.0;
+        }
+    }
+    return 0.0;
+}
+} // namespace
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
@@ -100,7 +124,11 @@ private:
                                   "，现在你发送的消息会广播给房间内所有玩家。");
                 }
             } else {
-                self->room_manager_->broadcast(self->room_id_, self->player_.name, msg);
+                if (msg == "/server_info") {
+                    self->deliver(self->room_manager_->server_info());
+                } else {
+                    self->room_manager_->broadcast(self->room_id_, self->player_.name, msg);
+                }
             }
 
             self->do_read();
@@ -195,6 +223,33 @@ void RoomManager::broadcast(const std::string& room_id, const std::string& sende
     for (const auto& session : session_it->second) {
         session->deliver(message);
     }
+}
+
+std::string RoomManager::server_info() const {
+    std::size_t total_players = 0;
+    for (const auto& [room_id, sessions] : sessions_by_room_) {
+        (void) room_id;
+        total_players += sessions.size();
+    }
+
+    struct rusage usage {};
+    getrusage(RUSAGE_SELF, &usage);
+    const double cpu_user_seconds = static_cast<double>(usage.ru_utime.tv_sec) +
+                                    static_cast<double>(usage.ru_utime.tv_usec) / 1000000.0;
+    const double cpu_system_seconds = static_cast<double>(usage.ru_stime.tv_sec) +
+                                      static_cast<double>(usage.ru_stime.tv_usec) / 1000000.0;
+    const long thread_count = sysconf(_SC_NPROCESSORS_ONLN);
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "服务器信息\n"
+        << "- 当前玩家数量: " << total_players << "\n"
+        << "- 当前房间数量: " << sessions_by_room_.size() << "\n"
+        << "- 内存占用(RSS): " << read_process_rss_mb() << " MB\n"
+        << "- CPU用户态时间: " << cpu_user_seconds << " s\n"
+        << "- CPU内核态时间: " << cpu_system_seconds << " s\n"
+        << "- 系统CPU核心数: " << thread_count;
+    return oss.str();
 }
 
 class Server {
