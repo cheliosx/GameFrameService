@@ -299,4 +299,8 @@ inline std::pair<std::string, std::string> decode_join_room_auth_body(const std:
     return {room_id, md5};
 }
 
+inline std::vector<std::uint8_t> encode_game_start(std::uint32_t message_id) {
+    return encode(message_id, ProtocolType::GameStart, {});
+}
+
 } // namespace protocol

@@ -11,7 +11,8 @@ enum class ProtocolType : std::uint16_t {
     SendInfo = 2,
     ReplayFrames = 3,
     JoinRoomChallenge = 4,
-    JoinRoomAuth = 5
+    JoinRoomAuth = 5,
+    GameStart = 6
 };
 
 enum class InfoType : std::uint16_t {

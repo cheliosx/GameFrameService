@@ -4,7 +4,6 @@
 #include <boost/uuid/detail/md5.hpp>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -46,11 +45,15 @@ class Session;
 
 class RoomManager {
 public:
-    RoomManager(asio::io_context& io_context, std::uint32_t fps)
-        : io_context_(io_context), frame_interval_ms_(std::max<std::uint32_t>(1, 1000 / std::max<std::uint32_t>(1, fps))) {}
+    RoomManager(asio::io_context& io_context, std::uint32_t fps, std::shared_ptr<RedisClient> redis_client)
+        : io_context_(io_context),
+          frame_interval_ms_(std::max<std::uint32_t>(1, 1000 / std::max<std::uint32_t>(1, fps))),
+          redis_client_(std::move(redis_client)) {}
 
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, int user_id);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
+    bool verify_join_auth(const std::string& room_id, std::uint64_t timestamp_ms, const std::string& client_md5);
+    void start_game(const std::string& room_id);
     void broadcast_with_frame(const std::string& room_id,
                               std::uint32_t message_id,
                               ProtocolType protocol_type,
@@ -72,6 +75,7 @@ private:
     std::unordered_map<std::string, std::unordered_set<std::shared_ptr<Session>>> sessions_by_room_;
     std::unordered_map<std::string, Room> room_states_;
     std::unordered_map<std::string, std::shared_ptr<asio::steady_timer>> room_timers_;
+    std::shared_ptr<RedisClient> redis_client_;
 };
 
 namespace {
@@ -186,11 +190,8 @@ ServerConfig parse_args(int argc, char** argv) {
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(tcp::socket socket, std::shared_ptr<RoomManager> room_manager, std::shared_ptr<RedisClient> redis_client)
-        : ws_(std::move(socket)),
-          room_manager_(std::move(room_manager)),
-          redis_client_(std::move(redis_client)),
-          session_id_(next_session_id_++) {}
+    Session(tcp::socket socket, std::shared_ptr<RoomManager> room_manager)
+        : ws_(std::move(socket)), room_manager_(std::move(room_manager)), session_id_(next_session_id_++) {}
 
     void start() {
         ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
@@ -255,6 +256,9 @@ private:
                     self->deliver(protocol::encode_chat(message_id, "请先发送入房鉴权协议"));
                 } else if (protocol_type == ProtocolType::SystemInfo) {
                     self->deliver(protocol::encode_system_info(message_id, self->room_manager_->server_info()));
+                } else if (protocol_type == ProtocolType::GameStart) {
+                    self->room_manager_->start_game(self->room_id_);
+                    self->deliver(protocol::encode_system_info(message_id, "游戏已开始"));
                 } else if (protocol_type == ProtocolType::SendInfo) {
                     const auto [info_type, payload] = protocol::decode_send_info_body(body);
                     self->room_manager_->enqueue_operation(self->room_id_, message_id, self->session_id_, info_type, payload);
@@ -273,10 +277,7 @@ private:
 
     void handle_join_auth(std::uint32_t message_id, const std::vector<std::uint8_t>& body) {
         const auto [room_id, client_md5] = protocol::decode_join_room_auth_body(body);
-        const auto secret = redis_client_->get_room_secret(room_id);
-        const auto expected = md5_hex(std::to_string(challenge_ts_ms_) + secret);
-
-        if (expected != client_md5) {
+        if (!room_manager_->verify_join_auth(room_id, challenge_ts_ms_, client_md5)) {
             deliver(protocol::encode_chat(message_id, "入房鉴权失败，md5不匹配"));
             return;
         }
@@ -315,7 +316,6 @@ private:
     beast::flat_buffer buffer_;
     std::deque<std::vector<std::uint8_t>> outgoing_messages_;
     std::shared_ptr<RoomManager> room_manager_;
-    std::shared_ptr<RedisClient> redis_client_;
 
     std::string room_id_;
     bool joined_room_ = false;
@@ -334,7 +334,34 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
         room.current_frame.frame_id = 1;
     }
     room.players.push_back(user_id);
+}
 
+bool RoomManager::verify_join_auth(const std::string& room_id, std::uint64_t timestamp_ms, const std::string& client_md5) {
+    auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
+        Room room;
+        room.id = room_id;
+        room.secret = redis_client_->get_room_secret(room_id);
+        room.current_frame.frame_id = 1;
+        room_states_[room_id] = std::move(room);
+        room_it = room_states_.find(room_id);
+    }
+
+    const auto expected = md5_hex(std::to_string(timestamp_ms) + room_it->second.secret);
+    return expected == client_md5;
+}
+
+void RoomManager::start_game(const std::string& room_id) {
+    auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
+        return;
+    }
+
+    if (room_it->second.game_started) {
+        return;
+    }
+
+    room_it->second.game_started = true;
     if (room_timers_.find(room_id) == room_timers_.end()) {
         start_room_broadcast(room_id);
     }
@@ -441,7 +468,7 @@ void RoomManager::tick_room_broadcast(const std::string& room_id) {
         }
 
         auto room_it = room_states_.find(room_id);
-        if (room_it == room_states_.end()) {
+        if (room_it == room_states_.end() || !room_it->second.game_started) {
             return;
         }
 
@@ -487,8 +514,8 @@ class Server {
 public:
     Server(asio::io_context& io_context, const ServerConfig& cfg)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), cfg.port)),
-          room_manager_(std::make_shared<RoomManager>(io_context, cfg.fps)),
-          redis_client_(std::make_shared<RedisClient>(cfg.redis_host, cfg.redis_port, cfg.redis_password)) {
+          redis_client_(std::make_shared<RedisClient>(cfg.redis_host, cfg.redis_port, cfg.redis_password)),
+          room_manager_(std::make_shared<RoomManager>(io_context, cfg.fps, redis_client_)) {
         do_accept();
     }
 
@@ -496,7 +523,7 @@ private:
     void do_accept() {
         acceptor_.async_accept([this](beast::error_code ec, tcp::socket socket) {
             if (!ec) {
-                std::make_shared<Session>(std::move(socket), room_manager_, redis_client_)->start();
+                std::make_shared<Session>(std::move(socket), room_manager_)->start();
             } else {
                 std::cerr << "接受连接失败: " << ec.message() << std::endl;
             }
@@ -505,8 +532,8 @@ private:
     }
 
     tcp::acceptor acceptor_;
-    std::shared_ptr<RoomManager> room_manager_;
     std::shared_ptr<RedisClient> redis_client_;
+    std::shared_ptr<RoomManager> room_manager_;
 };
 
 int main(int argc, char** argv) {

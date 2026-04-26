@@ -160,6 +160,12 @@ int main() {
                 break;
             }
 
+            if (input_msg == "start_game") {
+                const auto start_msg = protocol::encode_game_start(next_message_id++);
+                ws.write(asio::buffer(start_msg));
+                continue;
+            }
+
             if (input_msg.empty()) {
                 std::lock_guard<std::mutex> lock(output_mutex);
                 std::cout << "⚠️  消息不能为空，请重新输入" << std::endl;

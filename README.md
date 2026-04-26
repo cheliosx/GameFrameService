@@ -52,6 +52,12 @@ cp server.conf.example server.conf
 
 > Redis 连接在服务启动时建立并复用，避免每次鉴权都重新建连。
 
+## 游戏开始协议
+
+- 协议号：`GameStart`（6）
+- Room 默认 `game_started=false`，只有收到该协议后才开始按帧率广播帧循环。
+- 客户端示例可输入 `start_game` 触发该协议。
+
 ## 测试房间
 
 请先在 Redis 中准备测试房间密钥：
