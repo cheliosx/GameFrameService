@@ -7,6 +7,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include "models/protocol.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -37,11 +40,13 @@ int main() {
         ws.handshake(host + ":" + port, "/");
 
         // 连接后默认进入房间 1
-        ws.write(asio::buffer(std::string("mid=0;1")));
+        ws.binary(true);
+        const auto join_message = protocol::encode_chat(0, "1");
+        ws.write(asio::buffer(join_message));
 
         std::atomic<bool> running{true};
         std::mutex output_mutex;
-        std::uint64_t next_message_id = 1;
+        std::uint32_t next_message_id = 1;
 
         std::thread receiver([&ws, &running, &output_mutex] {
             try {
@@ -49,9 +54,20 @@ int main() {
                     beast::flat_buffer incoming;
                     ws.read(incoming);
 
+                    const auto data = incoming.data();
+                    std::vector<std::uint8_t> bytes(asio::buffers_begin(data), asio::buffers_end(data));
+                    const auto decoded = protocol::decode(bytes);
+
                     std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cout << "\n服务器广播: " << beast::buffers_to_string(incoming.data())
-                              << "\n-------------------------" << std::endl;
+                    if (decoded.message_type == MessageType::Chat) {
+                        std::cout << "\n[收到][mid=" << decoded.message_id << "] "
+                                  << protocol::decode_chat_body(decoded.body)
+                                  << "\n-------------------------" << std::endl;
+                    } else if (decoded.message_type == MessageType::SetPosition) {
+                        const auto [x, y] = protocol::decode_position_body(decoded.body);
+                        std::cout << "\n[收到位置][mid=" << decoded.message_id << "] x=" << x << ", y=" << y
+                                  << "\n-------------------------" << std::endl;
+                    }
                 }
             } catch (const std::exception& e) {
                 if (running.load()) {
@@ -64,15 +80,14 @@ int main() {
 
         {
             std::lock_guard<std::mutex> lock(output_mutex);
-            std::cout << "✅ 角色[" << role_id << "]已连接并进入房间 1，输入消息发送（输入 exit 退出）\n"
-                      << std::endl;
+            std::cout << "✅ 角色[" << role_id << "]已连接并进入房间 1，输入聊天消息（输入 exit 退出）\n" << std::endl;
         }
 
         std::string input_msg;
         while (running.load()) {
             {
                 std::lock_guard<std::mutex> lock(output_mutex);
-                std::cout << "请输入消息: ";
+                std::cout << "请输入聊天消息: ";
             }
             if (!std::getline(std::cin, input_msg)) {
                 break;
@@ -91,8 +106,8 @@ int main() {
             }
 
             const std::string payload = "[角色" + role_id + "] " + input_msg;
-            const std::string encoded_payload = "mid=" + std::to_string(next_message_id++) + ";" + payload;
-            ws.write(asio::buffer(encoded_payload));
+            const auto encoded = protocol::encode_chat(next_message_id++, payload);
+            ws.write(asio::buffer(encoded));
         }
 
         running.store(false);

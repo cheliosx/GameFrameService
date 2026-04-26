@@ -1,12 +1,14 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 #include <string>
 
-enum class MessageType {
-    Chat
+enum class MessageType : std::uint16_t {
+    Chat = 1,
+    SetPosition = 2
 };
 
 struct Message {
