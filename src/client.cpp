@@ -16,6 +16,23 @@ namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 using tcp = asio::ip::tcp;
 
+void print_frame(const Frame& frame) {
+    std::cout << "\n[帧广播] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
+    for (const auto& op : frame.operations) {
+        std::cout << "  - op mid=" << op.message_id << ", type=" << static_cast<std::uint16_t>(op.message_type);
+        if (op.message_type == MessageType::Chat) {
+            std::cout << ", chat=" << protocol::decode_chat_body(op.payload);
+        } else if (op.message_type == MessageType::SetPosition) {
+            const auto [x, y] = protocol::decode_position_body(op.payload);
+            std::cout << ", pos=(" << x << ", " << y << ")";
+        } else if (op.message_type == MessageType::SystemInfo) {
+            std::cout << ", system_info=" << protocol::decode_chat_body(op.payload);
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "-------------------------" << std::endl;
+}
+
 int main() {
     try {
         std::string role_id;
@@ -60,6 +77,9 @@ int main() {
                         std::cout << "\n[系统信息][mid=" << decoded.message_id << "] "
                                   << protocol::decode_chat_body(decoded.body)
                                   << "\n-------------------------" << std::endl;
+                    } else if (decoded.message_type == MessageType::FrameData) {
+                        const auto frame = protocol::deserialize_frame(decoded.body);
+                        print_frame(frame);
                     } else if (decoded.message_type == MessageType::Chat) {
                         std::cout << "\n[收到][mid=" << decoded.message_id << "] "
                                   << protocol::decode_chat_body(decoded.body)

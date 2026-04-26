@@ -1,8 +1,10 @@
 #pragma once
 
+#include "frame.hpp"
 #include "message.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -98,6 +100,57 @@ inline std::pair<float, float> decode_position_body(const std::vector<std::uint8
         throw std::runtime_error("位置消息体长度必须为8字节");
     }
     return {read_float(body, 0), read_float(body, 4)};
+}
+
+inline std::vector<std::uint8_t> serialize_frame(const Frame& frame) {
+    std::vector<std::uint8_t> out;
+    out.reserve(16);
+    append_u32(out, frame.frame_id);
+    append_u32(out, static_cast<std::uint32_t>(frame.operations.size()));
+    for (const auto& op : frame.operations) {
+        append_u32(out, op.message_id);
+        append_u16(out, static_cast<std::uint16_t>(op.message_type));
+        append_u32(out, static_cast<std::uint32_t>(op.payload.size()));
+        out.insert(out.end(), op.payload.begin(), op.payload.end());
+    }
+    return out;
+}
+
+inline Frame deserialize_frame(const std::vector<std::uint8_t>& body) {
+    if (body.size() < 8) {
+        throw std::runtime_error("帧数据长度不足");
+    }
+
+    std::size_t offset = 0;
+    Frame frame;
+    frame.frame_id = read_u32(body, offset);
+    offset += 4;
+    const std::uint32_t op_count = read_u32(body, offset);
+    offset += 4;
+
+    frame.operations.reserve(op_count);
+    for (std::uint32_t i = 0; i < op_count; ++i) {
+        if (offset + 10 > body.size()) {
+            throw std::runtime_error("帧操作头长度不足");
+        }
+
+        FrameOperation op;
+        op.message_id = read_u32(body, offset);
+        offset += 4;
+        op.message_type = static_cast<MessageType>(read_u16(body, offset));
+        offset += 2;
+        const std::uint32_t payload_len = read_u32(body, offset);
+        offset += 4;
+        if (offset + payload_len > body.size()) {
+            throw std::runtime_error("帧操作payload长度非法");
+        }
+        op.payload.assign(body.begin() + static_cast<std::ptrdiff_t>(offset),
+                          body.begin() + static_cast<std::ptrdiff_t>(offset + payload_len));
+        offset += payload_len;
+        frame.operations.push_back(std::move(op));
+    }
+
+    return frame;
 }
 
 } // namespace protocol

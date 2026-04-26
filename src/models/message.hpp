@@ -9,7 +9,8 @@
 enum class MessageType : std::uint16_t {
     SystemInfo = 0,
     Chat = 1,
-    SetPosition = 2
+    SetPosition = 2,
+    FrameData = 3
 };
 
 struct Message {

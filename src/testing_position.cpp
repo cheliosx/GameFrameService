@@ -38,10 +38,17 @@ int main() {
         std::vector<std::uint8_t> bytes(asio::buffers_begin(data), asio::buffers_end(data));
         const auto decoded = protocol::decode(bytes);
 
-        if (decoded.message_type == MessageType::SetPosition) {
-            const auto [x, y] = protocol::decode_position_body(decoded.body);
-            std::cout << "[position test] response mid=" << decoded.message_id
-                      << ", x=" << x << ", y=" << y << std::endl;
+        if (decoded.message_type == MessageType::FrameData) {
+            const auto frame = protocol::deserialize_frame(decoded.body);
+            std::cout << "[position test] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size()
+                      << std::endl;
+            for (const auto& operation : frame.operations) {
+                if (operation.message_type == MessageType::SetPosition) {
+                    const auto [x, y] = protocol::decode_position_body(operation.payload);
+                    std::cout << "  position op mid=" << operation.message_id << ", x=" << x << ", y=" << y
+                              << std::endl;
+                }
+            }
         }
 
         ws.close(websocket::close_code::normal);

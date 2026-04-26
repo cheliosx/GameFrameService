@@ -294,9 +294,8 @@ void RoomManager::tick_room_broadcast(const std::string& room_id) {
 
         auto& room = room_it->second;
         const Frame completed_frame = room.current_frame;
-        for (const auto& operation : completed_frame.operations) {
-            broadcast_with_frame(room_id, operation.message_id, operation.message_type, operation.payload);
-        }
+        const auto frame_payload = protocol::serialize_frame(completed_frame);
+        broadcast_with_frame(room_id, 0, MessageType::FrameData, frame_payload);
 
         room.received_messages.push_back(completed_frame);
         room.current_frame.frame_id += 1;
