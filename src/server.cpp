@@ -38,7 +38,7 @@ struct ServerConfig {
     std::uint32_t fps = 1;
     std::string redis_host = "127.0.0.1";
     unsigned short redis_port = 6379;
-    std::string redis_password;
+    std::string redis_password = "123456";
 };
 
 class RedisClient {
@@ -238,12 +238,16 @@ ServerConfig parse_config_file(const std::string& path) {
 }
 
 ServerConfig parse_args(int argc, char** argv) {
-    std::string config_path = "server.conf";
+    std::string config_path;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--config" && i + 1 < argc) {
             config_path = argv[++i];
         }
+    }
+
+    if (config_path.empty()) {
+        return ServerConfig{};
     }
     return parse_config_file(config_path);
 }

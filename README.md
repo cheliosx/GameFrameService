@@ -2,7 +2,15 @@
 
 ## 服务端配置文件（redis.conf 风格）
 
-服务端通过配置文件启动，默认读取项目根目录 `server.conf`，格式类似 `redis.conf`：
+服务端支持配置文件启动（`redis.conf` 风格）。如果**不传入配置文件**，服务端会使用内置默认值：
+
+- `port=8888`
+- `fps=1`
+- `redis_host=127.0.0.1`
+- `redis_port=6379`
+- `redis_password=123456`
+
+传入配置文件时，格式类似 `redis.conf`：
 
 ```conf
 # 监听端口
@@ -14,7 +22,7 @@ fps 2
 # Redis 地址配置
 redis_host 127.0.0.1
 redis_port 6379
-redis_password your_password
+redis_password 123456
 ```
 
 你可以先复制示例文件：
@@ -23,7 +31,7 @@ redis_password your_password
 cp server.conf.example server.conf
 ```
 
-启动服务端：
+不使用配置文件（直接用默认值）：
 
 ```bash
 ./ws_server
