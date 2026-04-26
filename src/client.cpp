@@ -19,7 +19,8 @@ using tcp = asio::ip::tcp;
 void print_frame(const Frame& frame) {
     std::cout << "\n[帧广播] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
     for (const auto& op : frame.operations) {
-        std::cout << "  - op mid=" << op.message_id << ", type=" << static_cast<std::uint16_t>(op.message_type);
+        std::cout << "  - op mid=" << op.message_id << ", user=" << op.user_id
+                  << ", type=" << static_cast<std::uint16_t>(op.message_type);
         if (op.message_type == MessageType::Chat) {
             std::cout << ", chat=" << protocol::decode_chat_body(op.payload);
         } else if (op.message_type == MessageType::SetPosition) {

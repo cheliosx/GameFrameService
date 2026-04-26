@@ -44,6 +44,7 @@ public:
                               const std::vector<std::uint8_t>& payload);
     void enqueue_operation(const std::string& room_id,
                            std::uint32_t message_id,
+                           std::uint64_t user_id,
                            MessageType type,
                            const std::vector<std::uint8_t>& payload);
     std::string server_info() const;
@@ -148,7 +149,7 @@ private:
             } else {
                 const std::vector<std::uint8_t> body(bytes.begin() + 6, bytes.end());
                 self->room_manager_->enqueue_operation(
-                    self->room_id_, message_id, static_cast<MessageType>(message_type), body);
+                    self->room_id_, message_id, self->player_.id, static_cast<MessageType>(message_type), body);
             }
 
             self->do_read();
@@ -253,6 +254,7 @@ void RoomManager::broadcast_with_frame(const std::string& room_id,
 
 void RoomManager::enqueue_operation(const std::string& room_id,
                                     std::uint32_t message_id,
+                                    std::uint64_t user_id,
                                     MessageType type,
                                     const std::vector<std::uint8_t>& payload) {
     const auto room_it = room_states_.find(room_id);
@@ -263,9 +265,11 @@ void RoomManager::enqueue_operation(const std::string& room_id,
     auto& operations = room_it->second.current_frame.operations;
     operations.erase(std::remove_if(operations.begin(),
                                     operations.end(),
-                                    [type](const FrameOperation& op) { return op.message_type == type; }),
+                                    [type, user_id](const FrameOperation& op) {
+                                        return op.message_type == type && op.user_id == user_id;
+                                    }),
                      operations.end());
-    operations.push_back(FrameOperation{message_id, type, payload});
+    operations.push_back(FrameOperation{message_id, user_id, type, payload});
 }
 
 void RoomManager::start_room_broadcast(const std::string& room_id) {

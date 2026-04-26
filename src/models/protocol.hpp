@@ -31,6 +31,12 @@ inline void append_u16(std::vector<std::uint8_t>& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>(value & 0xFF));
 }
 
+inline void append_u64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFF));
+    }
+}
+
 inline std::uint32_t read_u32(const std::vector<std::uint8_t>& data, std::size_t offset) {
     return (static_cast<std::uint32_t>(data[offset]) << 24) |
            (static_cast<std::uint32_t>(data[offset + 1]) << 16) |
@@ -41,6 +47,14 @@ inline std::uint32_t read_u32(const std::vector<std::uint8_t>& data, std::size_t
 inline std::uint16_t read_u16(const std::vector<std::uint8_t>& data, std::size_t offset) {
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[offset]) << 8) |
                                       static_cast<std::uint16_t>(data[offset + 1]));
+}
+
+inline std::uint64_t read_u64(const std::vector<std::uint8_t>& data, std::size_t offset) {
+    std::uint64_t value = 0;
+    for (int i = 0; i < 8; ++i) {
+        value = (value << 8) | static_cast<std::uint64_t>(data[offset + static_cast<std::size_t>(i)]);
+    }
+    return value;
 }
 
 inline void append_float(std::vector<std::uint8_t>& out, float value) {
@@ -109,6 +123,7 @@ inline std::vector<std::uint8_t> serialize_frame(const Frame& frame) {
     append_u32(out, static_cast<std::uint32_t>(frame.operations.size()));
     for (const auto& op : frame.operations) {
         append_u32(out, op.message_id);
+        append_u64(out, op.user_id);
         append_u16(out, static_cast<std::uint16_t>(op.message_type));
         append_u32(out, static_cast<std::uint32_t>(op.payload.size()));
         out.insert(out.end(), op.payload.begin(), op.payload.end());
@@ -130,13 +145,15 @@ inline Frame deserialize_frame(const std::vector<std::uint8_t>& body) {
 
     frame.operations.reserve(op_count);
     for (std::uint32_t i = 0; i < op_count; ++i) {
-        if (offset + 10 > body.size()) {
+        if (offset + 18 > body.size()) {
             throw std::runtime_error("帧操作头长度不足");
         }
 
         FrameOperation op;
         op.message_id = read_u32(body, offset);
         offset += 4;
+        op.user_id = read_u64(body, offset);
+        offset += 8;
         op.message_type = static_cast<MessageType>(read_u16(body, offset));
         offset += 2;
         const std::uint32_t payload_len = read_u32(body, offset);

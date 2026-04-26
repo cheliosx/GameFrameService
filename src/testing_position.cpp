@@ -45,7 +45,8 @@ int main() {
             for (const auto& operation : frame.operations) {
                 if (operation.message_type == MessageType::SetPosition) {
                     const auto [x, y] = protocol::decode_position_body(operation.payload);
-                    std::cout << "  position op mid=" << operation.message_id << ", x=" << x << ", y=" << y
+                    std::cout << "  position op mid=" << operation.message_id << ", user=" << operation.user_id
+                              << ", x=" << x << ", y=" << y
                               << std::endl;
                 }
             }
