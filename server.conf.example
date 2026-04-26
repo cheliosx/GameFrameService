@@ -1,0 +1,11 @@
+# GameFrameService server config (redis.conf style)
+# 监听端口
+port 8888
+
+# 帧率，广播间隔 = 1000/fps 毫秒
+fps 2
+
+# Redis 地址配置
+redis_host 127.0.0.1
+redis_port 6379
+redis_password your_password
