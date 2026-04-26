@@ -21,7 +21,6 @@
 
 #include "models/message.hpp"
 #include "models/frame.hpp"
-#include "models/player.hpp"
 #include "models/protocol.hpp"
 #include "models/room.hpp"
 
@@ -36,7 +35,7 @@ class RoomManager {
 public:
     explicit RoomManager(asio::io_context& io_context) : io_context_(io_context) {}
 
-    void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
+    void join(const std::string& room_id, const std::shared_ptr<Session>& session, int user_id);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
     void broadcast_with_frame(const std::string& room_id,
                               std::uint32_t message_id,
@@ -81,11 +80,7 @@ double read_process_rss_mb() {
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, std::shared_ptr<RoomManager> room_manager)
-        : ws_(std::move(socket)), room_manager_(std::move(room_manager)), session_id_(next_session_id_++) {
-        player_.id = session_id_;
-        player_.level = 1;
-        player_.name = "玩家" + std::to_string(session_id_);
-    }
+        : ws_(std::move(socket)), room_manager_(std::move(room_manager)), session_id_(next_session_id_++) {}
 
     void start() {
         ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
@@ -99,7 +94,7 @@ public:
 
             self->room_id_ = "1";
             self->joined_room_ = true;
-            self->room_manager_->join(self->room_id_, self, self->player_);
+            self->room_manager_->join(self->room_id_, self, self->session_id_);
             self->do_read();
         });
     }
@@ -149,7 +144,7 @@ private:
             } else if (protocol_type == ProtocolType::SendInfo) {
                 const auto [info_type, payload] = protocol::decode_send_info_body(body);
                 self->room_manager_->enqueue_operation(
-                    self->room_id_, message_id, self->player_.id, info_type, payload);
+                    self->room_id_, message_id, self->session_id_, info_type, payload);
             } else if (protocol_type == ProtocolType::ReplayFrames) {
                 const auto [start_frame_id, count] = protocol::decode_replay_request_body(body);
                 const auto frames = self->room_manager_->get_frames_after(self->room_id_, start_frame_id, count);
@@ -179,7 +174,7 @@ private:
 
     void leave_room() {
         if (joined_room_) {
-            room_manager_->leave(room_id_, shared_from_this(), player_.id);
+            room_manager_->leave(room_id_, shared_from_this(), session_id_);
             joined_room_ = false;
         }
     }
@@ -191,13 +186,12 @@ private:
 
     std::string room_id_;
     bool joined_room_ = false;
-    std::uint64_t session_id_;
-    Player player_;
+    int session_id_;
 
-    inline static std::atomic<std::uint64_t> next_session_id_{1};
+    inline static std::atomic<int> next_session_id_{1};
 };
 
-void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player) {
+void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session>& session, int user_id) {
     sessions_by_room_[room_id].insert(session);
 
     auto& room = room_states_[room_id];
@@ -205,7 +199,7 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
     if (room.current_frame.frame_id == 0) {
         room.current_frame.frame_id = 1;
     }
-    room.players.push_back(player);
+    room.players.push_back(user_id);
 
     if (room_timers_.find(room_id) == room_timers_.end()) {
         start_room_broadcast(room_id);
@@ -223,8 +217,8 @@ void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Sessio
     auto room_it = room_states_.find(room_id);
     if (room_it != room_states_.end()) {
         auto& players = room_it->second.players;
-        players.erase(std::remove_if(players.begin(), players.end(), [player_id](const Player& player) {
-                          return player.id == player_id;
+        players.erase(std::remove_if(players.begin(), players.end(), [player_id](int user_id) {
+                          return user_id == static_cast<int>(player_id);
                       }),
                       players.end());
     }
