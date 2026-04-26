@@ -2,6 +2,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <iostream>
@@ -9,6 +10,10 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+
+#include "models/message.hpp"
+#include "models/player.hpp"
+#include "models/room.hpp"
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -19,18 +24,23 @@ class Session;
 
 class RoomManager {
 public:
-    void join(const std::string& room_id, const std::shared_ptr<Session>& session);
-    void leave(const std::string& room_id, const std::shared_ptr<Session>& session);
-    void broadcast(const std::string& room_id, const std::string& message);
+    void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
+    void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
+    void broadcast(const std::string& room_id, const std::string& sender_name, const std::string& content);
 
 private:
-    std::unordered_map<std::string, std::unordered_set<std::shared_ptr<Session>>> rooms_;
+    std::unordered_map<std::string, std::unordered_set<std::shared_ptr<Session>>> sessions_by_room_;
+    std::unordered_map<std::string, Room> room_states_;
 };
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(tcp::socket socket, std::shared_ptr<RoomManager> room_manager)
-        : ws_(std::move(socket)), room_manager_(std::move(room_manager)), session_id_(next_session_id_++) {}
+        : ws_(std::move(socket)), room_manager_(std::move(room_manager)), session_id_(next_session_id_++) {
+        player_.id = session_id_;
+        player_.level = 1;
+        player_.name = "玩家" + std::to_string(session_id_);
+    }
 
     void start() {
         ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
@@ -83,13 +93,14 @@ private:
                 } else {
                     self->room_id_ = msg;
                     self->joined_room_ = true;
-                    self->room_manager_->join(self->room_id_, self);
+                    self->room_manager_->join(self->room_id_, self, self->player_);
 
                     self->deliver("成功进入房间 " + self->room_id_ +
+                                  "，你的身份是 " + self->player_.name +
                                   "，现在你发送的消息会广播给房间内所有玩家。");
                 }
             } else {
-                self->room_manager_->broadcast(self->room_id_, "玩家" + std::to_string(self->session_id_) + ": " + msg);
+                self->room_manager_->broadcast(self->room_id_, self->player_.name, msg);
             }
 
             self->do_read();
@@ -115,7 +126,7 @@ private:
 
     void leave_room() {
         if (joined_room_) {
-            room_manager_->leave(room_id_, shared_from_this());
+            room_manager_->leave(room_id_, shared_from_this(), player_.id);
             joined_room_ = false;
         }
     }
@@ -128,37 +139,60 @@ private:
     std::string room_id_;
     bool joined_room_ = false;
     std::uint64_t session_id_;
+    Player player_;
 
     inline static std::atomic<std::uint64_t> next_session_id_{1};
 };
 
-void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session>& session) {
-    rooms_[room_id].insert(session);
-    broadcast(room_id, "系统消息: 有玩家进入房间 " + room_id);
+void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player) {
+    sessions_by_room_[room_id].insert(session);
+
+    auto& room = room_states_[room_id];
+    room.id = room_id;
+    room.players.push_back(player);
+
+    broadcast(room_id, "系统", "有玩家进入房间 " + room_id);
 }
 
-void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session) {
-    auto it = rooms_.find(room_id);
-    if (it == rooms_.end()) {
+void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
+    auto session_it = sessions_by_room_.find(room_id);
+    if (session_it == sessions_by_room_.end()) {
         return;
     }
 
-    it->second.erase(session);
-    if (it->second.empty()) {
-        rooms_.erase(it);
+    session_it->second.erase(session);
+
+    auto room_it = room_states_.find(room_id);
+    if (room_it != room_states_.end()) {
+        auto& players = room_it->second.players;
+        players.erase(std::remove_if(players.begin(), players.end(), [player_id](const Player& player) {
+                          return player.id == player_id;
+                      }),
+                      players.end());
+    }
+
+    if (session_it->second.empty()) {
+        sessions_by_room_.erase(session_it);
+        room_states_.erase(room_id);
         return;
     }
 
-    broadcast(room_id, "系统消息: 有玩家离开房间 " + room_id);
+    broadcast(room_id, "系统", "有玩家离开房间 " + room_id);
 }
 
-void RoomManager::broadcast(const std::string& room_id, const std::string& message) {
-    auto it = rooms_.find(room_id);
-    if (it == rooms_.end()) {
+void RoomManager::broadcast(const std::string& room_id, const std::string& sender_name, const std::string& content) {
+    auto session_it = sessions_by_room_.find(room_id);
+    if (session_it == sessions_by_room_.end()) {
         return;
     }
 
-    for (const auto& session : it->second) {
+    auto room_it = room_states_.find(room_id);
+    if (room_it != room_states_.end()) {
+        room_it->second.received_messages.push_back(Message{MessageType::Chat, Message::now(), content});
+    }
+
+    const std::string message = "[" + Message::now() + "] " + sender_name + ": " + content;
+    for (const auto& session : session_it->second) {
         session->deliver(message);
     }
 }
