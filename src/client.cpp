@@ -11,6 +11,15 @@ using tcp = asio::ip::tcp;
 
 int main() {
     try {
+        std::string role_id;
+        std::cout << "请输入角色ID: ";
+        std::getline(std::cin, role_id);
+
+        if (role_id.empty()) {
+            std::cerr << "❌ 角色ID不能为空" << std::endl;
+            return 1;
+        }
+
         asio::io_context io_context;
 
         const std::string host = "127.0.0.1";
@@ -23,11 +32,19 @@ int main() {
         asio::connect(ws.next_layer(), endpoints);
         ws.handshake(host + ":" + port, "/");
 
-        std::cout << "✅ 已连接 WebSocket 服务器，输入消息发送（输入 exit 退出）\n" << std::endl;
-
-        std::string input_msg;
         beast::flat_buffer buffer;
 
+        // 第一步默认进入房间 1
+        ws.write(asio::buffer(std::string("1")));
+        ws.read(buffer);
+        std::cout << "服务器回复: " << beast::buffers_to_string(buffer.data())
+                  << "\n-------------------------" << std::endl;
+        buffer.consume(buffer.size());
+
+        std::cout << "✅ 角色[" << role_id << "]已连接并进入房间 1，输入消息发送（输入 exit 退出）\n"
+                  << std::endl;
+
+        std::string input_msg;
         while (true) {
             std::cout << "请输入消息: ";
             std::getline(std::cin, input_msg);
@@ -42,7 +59,8 @@ int main() {
                 continue;
             }
 
-            ws.write(asio::buffer(input_msg));
+            const std::string payload = "[角色" + role_id + "] " + input_msg;
+            ws.write(asio::buffer(payload));
             ws.read(buffer);
 
             std::cout << "服务器回复: " << beast::buffers_to_string(buffer.data())
