@@ -39,10 +39,7 @@ int main() {
         asio::connect(ws.next_layer(), endpoints);
         ws.handshake(host + ":" + port, "/");
 
-        // 连接后默认进入房间 1
         ws.binary(true);
-        const auto join_message = protocol::encode_chat(0, "1");
-        ws.write(asio::buffer(join_message));
 
         std::atomic<bool> running{true};
         std::mutex output_mutex;
@@ -59,7 +56,11 @@ int main() {
                     const auto decoded = protocol::decode(bytes);
 
                     std::lock_guard<std::mutex> lock(output_mutex);
-                    if (decoded.message_type == MessageType::Chat) {
+                    if (decoded.message_type == MessageType::SystemInfo) {
+                        std::cout << "\n[系统信息][mid=" << decoded.message_id << "] "
+                                  << protocol::decode_chat_body(decoded.body)
+                                  << "\n-------------------------" << std::endl;
+                    } else if (decoded.message_type == MessageType::Chat) {
                         std::cout << "\n[收到][mid=" << decoded.message_id << "] "
                                   << protocol::decode_chat_body(decoded.body)
                                   << "\n-------------------------" << std::endl;

@@ -34,11 +34,7 @@ class RoomManager {
 public:
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, const Player& player);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
-    void broadcast_chat(const std::string& room_id,
-                        std::uint32_t message_id,
-                        const std::string& sender_name,
-                        const std::string& content);
-    void update_player_position(const std::string& room_id, std::uint64_t player_id, float x, float y);
+    void broadcast_raw(const std::string& room_id, const std::vector<std::uint8_t>& payload);
     std::string server_info() const;
 
 private:
@@ -83,7 +79,9 @@ public:
                 return;
             }
 
-            self->deliver(protocol::encode_chat(0, "欢迎连接游戏服务器，请先发送房间ID进入房间。"));
+            self->room_id_ = "1";
+            self->joined_room_ = true;
+            self->room_manager_->join(self->room_id_, self, self->player_);
             self->do_read();
         });
     }
@@ -118,49 +116,21 @@ private:
             std::vector<std::uint8_t> bytes(asio::buffers_begin(data), asio::buffers_end(data));
             self->buffer_.consume(self->buffer_.size());
 
-            try {
-                const auto decoded = protocol::decode(bytes);
+            if (bytes.size() < 6) {
+                self->deliver(protocol::encode_chat(0, "消息长度不足，至少需要6字节"));
+                self->do_read();
+                return;
+            }
 
-                if (!self->joined_room_) {
-                    if (decoded.message_type != MessageType::Chat) {
-                        self->deliver(protocol::encode_chat(0, "首次消息必须是聊天类型，内容为房间ID"));
-                    } else {
-                        const std::string room_id = protocol::decode_chat_body(decoded.body);
-                        if (room_id.empty()) {
-                            self->deliver(protocol::encode_chat(0, "房间ID不能为空，请重新输入。"));
-                        } else {
-                            self->room_id_ = room_id;
-                            self->joined_room_ = true;
-                            self->room_manager_->join(self->room_id_, self, self->player_);
+            const std::uint32_t message_id = protocol::read_u32(bytes, 0);
+            const std::uint16_t message_type = protocol::read_u16(bytes, 4);
 
-                            self->deliver(protocol::encode_chat(0,
-                                                                "成功进入房间 " + self->room_id_ +
-                                                                    "，你的身份是 " + self->player_.name +
-                                                                    "。聊天消息使用Chat类型发送。"));
-                        }
-                    }
-                } else {
-                    if (decoded.message_type == MessageType::Chat) {
-                        const std::string text = protocol::decode_chat_body(decoded.body);
-                        if (text == "/server_info") {
-                            self->deliver(protocol::encode_chat(decoded.message_id, self->room_manager_->server_info()));
-                        } else {
-                            self->room_manager_->broadcast_chat(self->room_id_, decoded.message_id, self->player_.name, text);
-                        }
-                    } else if (decoded.message_type == MessageType::SetPosition) {
-                        const auto [x, y] = protocol::decode_position_body(decoded.body);
-                        self->room_manager_->update_player_position(self->room_id_, self->player_.id, x, y);
-                        self->player_.x = x;
-                        self->player_.y = y;
-                        self->deliver(protocol::encode_chat(decoded.message_id,
-                                                            "位置更新成功: x=" + std::to_string(x) +
-                                                                ", y=" + std::to_string(y)));
-                    } else {
-                        self->deliver(protocol::encode_chat(decoded.message_id, "不支持的消息类型"));
-                    }
-                }
-            } catch (const std::exception& e) {
-                self->deliver(protocol::encode_chat(0, std::string("消息解析失败: ") + e.what()));
+            if (message_type == static_cast<std::uint16_t>(MessageType::SystemInfo)) {
+                const std::string info_text = self->room_manager_->server_info();
+                const auto system_info_body = std::vector<std::uint8_t>(info_text.begin(), info_text.end());
+                self->deliver(protocol::encode(message_id, MessageType::SystemInfo, system_info_body));
+            } else {
+                self->room_manager_->broadcast_raw(self->room_id_, bytes);
             }
 
             self->do_read();
@@ -210,8 +180,6 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
     auto& room = room_states_[room_id];
     room.id = room_id;
     room.players.push_back(player);
-
-    broadcast_chat(room_id, 0, "系统", "有玩家进入房间 " + room_id);
 }
 
 void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
@@ -234,46 +202,17 @@ void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Sessio
     if (session_it->second.empty()) {
         sessions_by_room_.erase(session_it);
         room_states_.erase(room_id);
-        return;
     }
-
-    broadcast_chat(room_id, 0, "系统", "有玩家离开房间 " + room_id);
 }
 
-void RoomManager::broadcast_chat(const std::string& room_id,
-                                 std::uint32_t message_id,
-                                 const std::string& sender_name,
-                                 const std::string& content) {
+void RoomManager::broadcast_raw(const std::string& room_id, const std::vector<std::uint8_t>& payload) {
     auto session_it = sessions_by_room_.find(room_id);
     if (session_it == sessions_by_room_.end()) {
         return;
     }
 
-    auto room_it = room_states_.find(room_id);
-    if (room_it != room_states_.end()) {
-        room_it->second.received_messages.push_back(Message{MessageType::Chat, Message::now(), content});
-    }
-
-    const std::string message = "[" + Message::now() + "] " + sender_name + ": " + content;
-    const auto encoded = protocol::encode_chat(message_id, message);
     for (const auto& session : session_it->second) {
-        session->deliver(encoded);
-    }
-}
-
-void RoomManager::update_player_position(const std::string& room_id, std::uint64_t player_id, float x, float y) {
-    auto room_it = room_states_.find(room_id);
-    if (room_it == room_states_.end()) {
-        return;
-    }
-
-    auto& players = room_it->second.players;
-    for (auto& player : players) {
-        if (player.id == player_id) {
-            player.x = x;
-            player.y = y;
-            break;
-        }
+        session->deliver(payload);
     }
 }
 

@@ -28,10 +28,6 @@ int main() {
         ws.handshake(host + ":" + port, "/");
         ws.binary(true);
 
-        // 进入房间 1
-        const auto join_message = protocol::encode_chat(0, "1");
-        ws.write(asio::buffer(join_message));
-
         // 测试发送位置消息（x,y 两个 float）
         const auto position_message = protocol::encode_position(1, 12.5F, -3.25F);
         ws.write(asio::buffer(position_message));

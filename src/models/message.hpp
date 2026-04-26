@@ -7,6 +7,7 @@
 #include <string>
 
 enum class MessageType : std::uint16_t {
+    SystemInfo = 0,
     Chat = 1,
     SetPosition = 2
 };
