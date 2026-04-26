@@ -61,16 +61,12 @@ int main() {
                                   << protocol::decode_chat_body(decoded.body)
                                   << "\n-------------------------" << std::endl;
                     } else if (decoded.message_type == MessageType::Chat) {
-                        const auto [frame_id, payload] = protocol::unwrap_frame_body(decoded.body);
                         std::cout << "\n[收到][mid=" << decoded.message_id << "] "
-                                  << "[frame=" << frame_id << "] "
-                                  << protocol::decode_chat_body(payload)
+                                  << protocol::decode_chat_body(decoded.body)
                                   << "\n-------------------------" << std::endl;
                     } else if (decoded.message_type == MessageType::SetPosition) {
-                        const auto [frame_id, payload] = protocol::unwrap_frame_body(decoded.body);
-                        const auto [x, y] = protocol::decode_position_body(payload);
-                        std::cout << "\n[收到位置][mid=" << decoded.message_id << "][frame=" << frame_id << "] x=" << x
-                                  << ", y=" << y
+                        const auto [x, y] = protocol::decode_position_body(decoded.body);
+                        std::cout << "\n[收到位置][mid=" << decoded.message_id << "] x=" << x << ", y=" << y
                                   << "\n-------------------------" << std::endl;
                     }
                 }

@@ -100,20 +100,4 @@ inline std::pair<float, float> decode_position_body(const std::vector<std::uint8
     return {read_float(body, 0), read_float(body, 4)};
 }
 
-inline std::vector<std::uint8_t> wrap_with_frame(std::uint32_t frame_id, const std::vector<std::uint8_t>& payload) {
-    std::vector<std::uint8_t> wrapped;
-    wrapped.reserve(4 + payload.size());
-    append_u32(wrapped, frame_id);
-    wrapped.insert(wrapped.end(), payload.begin(), payload.end());
-    return wrapped;
-}
-
-inline std::pair<std::uint32_t, std::vector<std::uint8_t>> unwrap_frame_body(const std::vector<std::uint8_t>& body) {
-    if (body.size() < 4) {
-        throw std::runtime_error("消息体长度不足，缺少帧ID");
-    }
-    const auto frame_id = read_u32(body, 0);
-    return {frame_id, std::vector<std::uint8_t>(body.begin() + 4, body.end())};
-}
-
 } // namespace protocol

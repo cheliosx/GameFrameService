@@ -1,6 +1,6 @@
 #pragma once
 
-#include "message.hpp"
+#include "frame.hpp"
 #include "player.hpp"
 
 #include <cstdint>
@@ -9,7 +9,7 @@
 
 struct Room {
     std::string id;
-    std::uint32_t frame_id = 1;
+    Frame current_frame;
     std::vector<Player> players;
-    std::vector<Message> received_messages;
+    std::vector<Frame> received_messages;
 };

@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "models/message.hpp"
+#include "models/frame.hpp"
 #include "models/player.hpp"
 #include "models/protocol.hpp"
 #include "models/room.hpp"
@@ -41,7 +42,10 @@ public:
                               std::uint32_t message_id,
                               MessageType type,
                               const std::vector<std::uint8_t>& payload);
-    std::uint32_t current_frame_id(const std::string& room_id) const;
+    void enqueue_operation(const std::string& room_id,
+                           std::uint32_t message_id,
+                           MessageType type,
+                           const std::vector<std::uint8_t>& payload);
     std::string server_info() const;
 
 private:
@@ -143,7 +147,7 @@ private:
                 self->deliver(protocol::encode(message_id, MessageType::SystemInfo, system_info_body));
             } else {
                 const std::vector<std::uint8_t> body(bytes.begin() + 6, bytes.end());
-                self->room_manager_->broadcast_with_frame(
+                self->room_manager_->enqueue_operation(
                     self->room_id_, message_id, static_cast<MessageType>(message_type), body);
             }
 
@@ -193,6 +197,9 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
 
     auto& room = room_states_[room_id];
     room.id = room_id;
+    if (room.current_frame.frame_id == 0) {
+        room.current_frame.frame_id = 1;
+    }
     room.players.push_back(player);
 
     if (room_timers_.find(room_id) == room_timers_.end()) {
@@ -237,21 +244,28 @@ void RoomManager::broadcast_with_frame(const std::string& room_id,
         return;
     }
 
-    const auto frame_id = current_frame_id(room_id);
-    const auto wrapped_body = protocol::wrap_with_frame(frame_id, payload);
-    const auto encoded = protocol::encode(message_id, type, wrapped_body);
+    const auto encoded = protocol::encode(message_id, type, payload);
 
     for (const auto& session : session_it->second) {
         session->deliver(encoded);
     }
 }
 
-std::uint32_t RoomManager::current_frame_id(const std::string& room_id) const {
+void RoomManager::enqueue_operation(const std::string& room_id,
+                                    std::uint32_t message_id,
+                                    MessageType type,
+                                    const std::vector<std::uint8_t>& payload) {
     const auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end()) {
-        return 0;
+        return;
     }
-    return room_it->second.frame_id;
+
+    auto& operations = room_it->second.current_frame.operations;
+    operations.erase(std::remove_if(operations.begin(),
+                                    operations.end(),
+                                    [type](const FrameOperation& op) { return op.message_type == type; }),
+                     operations.end());
+    operations.push_back(FrameOperation{message_id, type, payload});
 }
 
 void RoomManager::start_room_broadcast(const std::string& room_id) {
@@ -278,12 +292,15 @@ void RoomManager::tick_room_broadcast(const std::string& room_id) {
             return;
         }
 
-        const auto frame_id = room_it->second.frame_id;
-        const std::string text = "房间定时广播，frame_id=" + std::to_string(frame_id);
-        const auto payload = std::vector<std::uint8_t>(text.begin(), text.end());
-        broadcast_with_frame(room_id, 0, MessageType::Chat, payload);
+        auto& room = room_it->second;
+        const Frame completed_frame = room.current_frame;
+        for (const auto& operation : completed_frame.operations) {
+            broadcast_with_frame(room_id, operation.message_id, operation.message_type, operation.payload);
+        }
 
-        room_it->second.frame_id += 1;
+        room.received_messages.push_back(completed_frame);
+        room.current_frame.frame_id += 1;
+        room.current_frame.operations.clear();
         tick_room_broadcast(room_id);
     });
 }
