@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(asio_hello)
+project(asio_game_server)
 
 # C++ 标准
 set(CMAKE_CXX_STANDARD 17)
@@ -32,18 +32,18 @@ endif()
 find_package(Boost REQUIRED COMPONENTS system)
 
 # ===================== 编译目标 =====================
-add_executable(server src/server.cpp)
-add_executable(client src/client.cpp)
+add_executable(ws_server src/server.cpp)
+add_executable(ws_client src/client.cpp)
 
 # 链接库
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # 线上：静态链接 libgcc/libstdc++，完全无依赖
-    target_link_libraries(server PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
-    target_link_libraries(client PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
+    target_link_libraries(ws_server PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
+    target_link_libraries(ws_client PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
 else()
     # 本地：普通链接
-    target_link_libraries(server PRIVATE Boost::system pthread)
-    target_link_libraries(client PRIVATE Boost::system pthread)
+    target_link_libraries(ws_server PRIVATE Boost::system pthread)
+    target_link_libraries(ws_client PRIVATE Boost::system pthread)
 endif()
 
 # ===================== Linux PIE 优化 =====================
