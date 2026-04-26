@@ -250,4 +250,53 @@ inline std::vector<std::uint8_t> encode_replay_response(std::uint32_t message_id
     return encode(message_id, ProtocolType::ReplayFrames, serialize_frames(frames));
 }
 
+inline std::vector<std::uint8_t> encode_join_room_challenge(std::uint32_t message_id, std::uint64_t timestamp_ms) {
+    std::vector<std::uint8_t> body;
+    append_u64(body, timestamp_ms);
+    return encode(message_id, ProtocolType::JoinRoomChallenge, body);
+}
+
+inline std::uint64_t decode_join_room_challenge_body(const std::vector<std::uint8_t>& body) {
+    if (body.size() != 8) {
+        throw std::runtime_error("入房挑战消息体必须为8字节时间戳");
+    }
+    return read_u64(body, 0);
+}
+
+inline std::vector<std::uint8_t> encode_join_room_auth(std::uint32_t message_id,
+                                                       const std::string& room_id,
+                                                       const std::string& md5) {
+    std::vector<std::uint8_t> body;
+    append_u16(body, static_cast<std::uint16_t>(room_id.size()));
+    body.insert(body.end(), room_id.begin(), room_id.end());
+    append_u16(body, static_cast<std::uint16_t>(md5.size()));
+    body.insert(body.end(), md5.begin(), md5.end());
+    return encode(message_id, ProtocolType::JoinRoomAuth, body);
+}
+
+inline std::pair<std::string, std::string> decode_join_room_auth_body(const std::vector<std::uint8_t>& body) {
+    if (body.size() < 4) {
+        throw std::runtime_error("入房鉴权消息体长度不足");
+    }
+
+    std::size_t offset = 0;
+    const auto room_id_len = read_u16(body, offset);
+    offset += 2;
+    if (offset + room_id_len + 2 > body.size()) {
+        throw std::runtime_error("入房鉴权room_id长度非法");
+    }
+    std::string room_id(body.begin() + static_cast<std::ptrdiff_t>(offset),
+                        body.begin() + static_cast<std::ptrdiff_t>(offset + room_id_len));
+    offset += room_id_len;
+
+    const auto md5_len = read_u16(body, offset);
+    offset += 2;
+    if (offset + md5_len != body.size()) {
+        throw std::runtime_error("入房鉴权md5长度非法");
+    }
+    std::string md5(body.begin() + static_cast<std::ptrdiff_t>(offset),
+                    body.begin() + static_cast<std::ptrdiff_t>(offset + md5_len));
+    return {room_id, md5};
+}
+
 } // namespace protocol
