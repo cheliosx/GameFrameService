@@ -54,7 +54,7 @@ void print_help() {
     std::cout << "\n========== 命令帮助 ==========" << std::endl;
     std::cout << "1 <内容>     - 发送聊天消息，如: 1 hello" << std::endl;
     std::cout << "2 <x> <y>    - 发送位置，如: 2 10.5 20.3" << std::endl;
-    std::cout << "start_game   - 开始游戏" << std::endl;
+    std::cout << "go   - 开始游戏" << std::endl;
     std::cout << "info         - 获取服务器信息" << std::endl;
     std::cout << "help         - 显示此帮助信息" << std::endl;
     std::cout << "exit         - 退出程序" << std::endl;
@@ -194,7 +194,7 @@ int main() {
                 continue;
             }
 
-            if (cmd == "start_game") {
+            if (cmd == "go") {
                 const auto start_msg = protocol::encode_game_start(next_message_id++);
                 ws.write(asio::buffer(start_msg));
                 continue;

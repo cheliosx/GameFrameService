@@ -22,6 +22,7 @@ struct ServerConfig {
     std::string redis_host = "127.0.0.1";
     unsigned short redis_port = 6379;
     std::string redis_password = "123456";
+    std::size_t num_shards = 4;
 };
 
 namespace {
@@ -59,6 +60,8 @@ void parse_config_line(ServerConfig& cfg, const std::string& line) {
         cfg.redis_port = static_cast<unsigned short>(std::stoul(value));
     } else if (key == "redis_password") {
         cfg.redis_password = value;
+    } else if (key == "num_shards") {
+        cfg.num_shards = static_cast<std::size_t>(std::stoul(value));
     }
 }
 
@@ -97,7 +100,7 @@ public:
     Server(asio::io_context& io_context, const ServerConfig& cfg)
         : acceptor_(io_context, tcp::endpoint(tcp::v4(), cfg.port)),
           redis_client_(std::make_shared<RedisClient>(cfg.redis_host, cfg.redis_port, cfg.redis_password)),
-          room_manager_(std::make_shared<RoomManager>(io_context, cfg.fps, redis_client_)) {
+          room_manager_(std::make_shared<RoomManager>(cfg.fps, redis_client_, cfg.num_shards)) {
         do_accept();
     }
 
@@ -124,7 +127,8 @@ int main(int argc, char** argv) {
         Server server(io_context, cfg);
 
         std::cout << "WebSocket 服务器启动: port=" << cfg.port << ", fps=" << cfg.fps
-                  << ", redis=" << cfg.redis_host << ':' << cfg.redis_port << std::endl;
+                  << ", redis=" << cfg.redis_host << ':' << cfg.redis_port
+                  << ", shards=" << cfg.num_shards << std::endl;
         io_context.run();
     } catch (const std::exception& e) {
         std::cerr << "异常: " << e.what() << std::endl;
