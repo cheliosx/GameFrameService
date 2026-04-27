@@ -149,6 +149,14 @@ std::vector<Frame> RoomManager::get_frames_after(const std::string& room_id,
     return result;
 }
 
+std::uint32_t RoomManager::get_current_frame_id(const std::string& room_id) const {
+    const auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
+        return 0;
+    }
+    return room_it->second.current_frame.frame_id - 1;
+}
+
 void RoomManager::start_room_broadcast(const std::string& room_id) {
     auto timer = std::make_shared<boost::asio::steady_timer>(io_context_);
     room_timers_[room_id] = timer;
@@ -175,9 +183,23 @@ void RoomManager::tick_room_broadcast(const std::string& room_id) {
 
         auto& room = room_it->second;
         const Frame completed_frame = room.current_frame;
-        broadcast_with_frame(room_id, 0, ProtocolType::ReplayFrames, protocol::serialize_frames({completed_frame}));
 
-        room.received_messages.push_back(completed_frame);
+        std::vector<Frame> frames;
+        if (!completed_frame.operations.empty()) {
+            frames.push_back(completed_frame);
+        }
+        const auto current_frame_id = room.current_frame.frame_id - 1;
+        const auto encoded = protocol::encode_replay_response(0, frames, current_frame_id);
+
+        for (const auto& player : room_it->second.players) {
+            if (player.session) {
+                player.session->deliver(encoded);
+            }
+        }
+
+        if (!completed_frame.operations.empty()) {
+            room.received_messages.push_back(completed_frame);
+        }
         room.current_frame.frame_id += 1;
         room.current_frame.operations.clear();
         tick_room_broadcast(room_id);

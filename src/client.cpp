@@ -36,9 +36,9 @@ std::string md5_hex(const std::string& text) {
 }
 
 void print_frame(const Frame& frame) {
-    std::cout << "\n[帧广播] frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
+    std::cout << "  frame_id=" << frame.frame_id << ", op_count=" << frame.operations.size() << std::endl;
     for (const auto& op : frame.operations) {
-        std::cout << "  - op mid=" << op.message_id << ", user=" << op.user_id
+        std::cout << "    - op mid=" << op.message_id << ", user=" << op.user_id
                   << ", type=" << static_cast<std::uint16_t>(op.info_type);
         if (op.info_type == InfoType::Chat) {
             std::cout << ", chat=" << protocol::decode_chat_payload(op.payload);
@@ -48,7 +48,17 @@ void print_frame(const Frame& frame) {
         }
         std::cout << std::endl;
     }
-    std::cout << "-------------------------" << std::endl;
+}
+
+void print_help() {
+    std::cout << "\n========== 命令帮助 ==========" << std::endl;
+    std::cout << "1 <内容>     - 发送聊天消息，如: 1 hello" << std::endl;
+    std::cout << "2 <x> <y>    - 发送位置，如: 2 10.5 20.3" << std::endl;
+    std::cout << "start_game   - 开始游戏" << std::endl;
+    std::cout << "info         - 获取服务器信息" << std::endl;
+    std::cout << "help         - 显示此帮助信息" << std::endl;
+    std::cout << "exit         - 退出程序" << std::endl;
+    std::cout << "============================\n" << std::endl;
 }
 
 int main() {
@@ -120,11 +130,20 @@ int main() {
 
                     std::lock_guard<std::mutex> lock(output_mutex);
                     if (decoded.protocol_type == ProtocolType::SystemInfo) {
-                        std::cout << "\n[系统信息][mid=" << decoded.message_id << "] "
-                                  << protocol::decode_system_info_body(decoded.body)
-                                  << "\n-------------------------" << std::endl;
+                        std::cout << "\n[系统信息] " << protocol::decode_system_info_body(decoded.body) << std::endl;
                     } else if (decoded.protocol_type == ProtocolType::ReplayFrames) {
-                        const auto frames = protocol::deserialize_frames(decoded.body);
+                        if (decoded.body.size() < 8) {
+                            std::cout << "\n⚠️ 补帧数据长度不足" << std::endl;
+                            continue;
+                        }
+                        std::size_t offset = 0;
+                        const auto current_frame_id = protocol::read_u32(decoded.body, offset);
+                        offset += 8; // Skip count field
+
+                        std::vector<std::uint8_t> frames_data(decoded.body.begin() + offset, decoded.body.end());
+                        const auto frames = protocol::deserialize_frames(frames_data);
+
+                        std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << frames.size() << std::endl;
                         for (const auto& frame : frames) {
                             print_frame(frame);
                         }
@@ -141,40 +160,87 @@ int main() {
 
         {
             std::lock_guard<std::mutex> lock(output_mutex);
-            std::cout << "✅ 角色[" << role_id << "]已连接并通过鉴权进入房间 1，输入聊天消息（输入 exit 退出）\n" << std::endl;
+            print_help();
+            std::cout << "\n✅ 角色[" << role_id << "]已连接并通过鉴权进入房间 1\n" << std::endl;
         }
 
         std::string input_msg;
         while (running.load()) {
             {
                 std::lock_guard<std::mutex> lock(output_mutex);
-                std::cout << "请输入聊天消息: ";
+                std::cout << "> ";
             }
             if (!std::getline(std::cin, input_msg)) {
                 break;
             }
 
-            if (input_msg == "exit") {
+            std::istringstream iss(input_msg);
+            std::string cmd;
+            iss >> cmd;
+
+            if (cmd.empty() || cmd[0] == '#') {
+                continue;
+            }
+
+            if (cmd == "exit") {
                 std::lock_guard<std::mutex> lock(output_mutex);
                 std::cout << "👋 退出程序..." << std::endl;
                 break;
             }
 
-            if (input_msg == "start_game") {
+            if (cmd == "help") {
+                std::lock_guard<std::mutex> lock(output_mutex);
+                print_help();
+                continue;
+            }
+
+            if (cmd == "start_game") {
                 const auto start_msg = protocol::encode_game_start(next_message_id++);
                 ws.write(asio::buffer(start_msg));
                 continue;
             }
 
-            if (input_msg.empty()) {
-                std::lock_guard<std::mutex> lock(output_mutex);
-                std::cout << "⚠️  消息不能为空，请重新输入" << std::endl;
+            if (cmd == "info") {
+                const auto info_msg = protocol::encode_system_info(next_message_id++, "get_server_info");
+                ws.write(asio::buffer(info_msg));
                 continue;
             }
 
-            const std::string payload = "[角色" + role_id + "] " + input_msg;
-            const auto encoded = protocol::encode_chat(next_message_id++, payload);
-            ws.write(asio::buffer(encoded));
+            if (cmd == "1") {
+                std::string content;
+                std::getline(iss, content);
+                if (content.empty() || content[0] == ' ') {
+                    content = content.substr(1);
+                }
+                if (content.empty()) {
+                    std::lock_guard<std::mutex> lock(output_mutex);
+                    std::cout << "⚠️  聊天内容不能为空" << std::endl;
+                    continue;
+                }
+                const std::string payload = "[角色" + role_id + "] " + content;
+                const auto encoded = protocol::encode_chat(next_message_id++, payload);
+                ws.write(asio::buffer(encoded));
+                continue;
+            }
+
+            if (cmd == "2") {
+                std::string pos_str;
+                std::getline(iss, pos_str);
+                if (pos_str.empty() || pos_str[0] == ' ') {
+                    pos_str = pos_str.substr(1);
+                }
+                float x = 0.0f, y = 0.0f;
+                std::istringstream pos_iss(pos_str);
+                pos_iss >> x >> y;
+                const auto encoded = protocol::encode_position(next_message_id++, x, y);
+                ws.write(asio::buffer(encoded));
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(output_mutex);
+                std::cout << "⚠️  未知命令: " << cmd << "，输入 help 查看帮助" << std::endl;
+            }
         }
 
         running.store(false);

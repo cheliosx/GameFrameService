@@ -92,7 +92,8 @@ void Session::do_read() {
             } else if (protocol_type == ProtocolType::ReplayFrames) {
                 const auto [start_frame_id, count] = protocol::decode_replay_request_body(body);
                 const auto frames = self->room_manager_->get_frames_after(self->room_id_, start_frame_id, count);
-                self->deliver(protocol::encode_replay_response(message_id, frames));
+                const auto current_frame_id = self->room_manager_->get_current_frame_id(self->room_id_);
+                self->deliver(protocol::encode_replay_response(message_id, frames, current_frame_id));
             }
         } catch (const std::exception& e) {
             self->deliver(protocol::encode_chat(message_id, std::string("协议处理失败: ") + e.what()));

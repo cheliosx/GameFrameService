@@ -26,6 +26,7 @@ public:
                            InfoType info_type,
                            const std::vector<std::uint8_t>& payload);
     std::vector<Frame> get_frames_after(const std::string& room_id, std::uint32_t frame_id, std::uint32_t count) const;
+    std::uint32_t get_current_frame_id(const std::string& room_id) const;
     std::string server_info() const;
 
 private:

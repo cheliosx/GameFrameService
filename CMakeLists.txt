@@ -34,22 +34,16 @@ find_package(Boost REQUIRED COMPONENTS system)
 # ===================== 编译目标 =====================
 add_executable(ws_server src/server.cpp src/redis_client.cpp src/room_manager.cpp src/session.cpp)
 add_executable(ws_client src/client.cpp)
-add_executable(ws_position_test src/testing_position.cpp)
-add_executable(ws_replay_test src/testing_replay.cpp)
 
 # 链接库
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     # 线上：静态链接 libgcc/libstdc++，完全无依赖
     target_link_libraries(ws_server PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
     target_link_libraries(ws_client PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
-    target_link_libraries(ws_position_test PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
-    target_link_libraries(ws_replay_test PRIVATE Boost::system pthread -static-libgcc -static-libstdc++)
 else()
     # 本地：普通链接
     target_link_libraries(ws_server PRIVATE Boost::system pthread)
     target_link_libraries(ws_client PRIVATE Boost::system pthread)
-    target_link_libraries(ws_position_test PRIVATE Boost::system pthread)
-    target_link_libraries(ws_replay_test PRIVATE Boost::system pthread)
 endif()
 
 # ===================== Linux PIE 优化 =====================

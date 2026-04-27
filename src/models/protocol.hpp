@@ -203,7 +203,14 @@ inline std::vector<std::uint8_t> serialize_frames(const std::vector<Frame>& fram
     return out;
 }
 
+inline std::vector<std::uint8_t> serialize_frames_for_broadcast(const std::vector<Frame>& frames) {
+    return serialize_frames(frames);
+}
+
 inline std::vector<Frame> deserialize_frames(const std::vector<std::uint8_t>& body) {
+    if (body.empty()) {
+        return {};
+    }
     if (body.size() < 4) {
         throw std::runtime_error("补帧响应长度不足");
     }
@@ -246,8 +253,12 @@ inline std::pair<std::uint32_t, std::uint32_t> decode_replay_request_body(const 
     return {read_u32(body, 0), read_u32(body, 4)};
 }
 
-inline std::vector<std::uint8_t> encode_replay_response(std::uint32_t message_id, const std::vector<Frame>& frames) {
-    return encode(message_id, ProtocolType::ReplayFrames, serialize_frames(frames));
+inline std::vector<std::uint8_t> encode_replay_response(std::uint32_t message_id, const std::vector<Frame>& frames, std::uint32_t current_frame_id) {
+    std::vector<std::uint8_t> body;
+    append_u32(body, current_frame_id);
+    const auto frames_data = serialize_frames(frames);
+    body.insert(body.end(), frames_data.begin(), frames_data.end());
+    return encode(message_id, ProtocolType::ReplayFrames, body);
 }
 
 inline std::vector<std::uint8_t> encode_join_room_challenge(std::uint32_t message_id, std::uint64_t timestamp_ms) {
