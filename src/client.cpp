@@ -132,20 +132,34 @@ int main() {
                     if (decoded.protocol_type == ProtocolType::SystemInfo) {
                         std::cout << "\n[系统信息] " << protocol::decode_system_info_body(decoded.body) << std::endl;
                     } else if (decoded.protocol_type == ProtocolType::ReplayFrames) {
-                        if (decoded.body.size() < 8) {
-                            std::cout << "\n⚠️ 补帧数据长度不足" << std::endl;
-                            continue;
-                        }
-                        std::size_t offset = 0;
-                        const auto current_frame_id = protocol::read_u32(decoded.body, offset);
-                        offset += 8; // Skip count field
+                        try {
+                            if (decoded.body.size() < 8) {
+                                std::cout << "\n⚠️ 补帧数据长度不足" << std::endl;
+                                continue;
+                            }
+                            std::size_t offset = 0;
+                            const auto current_frame_id = protocol::read_u32(decoded.body, offset);
+                            offset += 4;
+                            const auto count = protocol::read_u32(decoded.body, offset);
+                            offset += 4;
 
-                        std::vector<std::uint8_t> frames_data(decoded.body.begin() + offset, decoded.body.end());
-                        const auto frames = protocol::deserialize_frames(frames_data);
+                            std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << count << std::endl;
 
-                        std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << frames.size() << std::endl;
-                        for (const auto& frame : frames) {
-                            print_frame(frame);
+                            if (count > 0) {
+                                const auto frames = protocol::deserialize_frames(decoded.body);
+                                for (const auto& frame : frames) {
+                                    print_frame(frame);
+                                }
+                            }
+                        } catch (const std::exception& e) {
+                            std::cout << "\n⚠️ 帧数据解析失败: " << e.what() << ", body_size=" << decoded.body.size() << std::endl;
+                            if (decoded.body.size() >= 12) {
+                                std::cout << "  body bytes: ";
+                                for (size_t i = 0; i < std::min(size_t(12), decoded.body.size()); i++) {
+                                    std::cout << static_cast<int>(decoded.body[i]) << " ";
+                                }
+                                std::cout << std::endl;
+                            }
                         }
                     }
                 }
