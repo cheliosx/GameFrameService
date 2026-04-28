@@ -140,16 +140,13 @@ int main() {
                             std::size_t offset = 0;
                             const auto current_frame_id = protocol::read_u32(decoded.body, offset);
                             offset += 4;
-                            const auto count = protocol::read_u32(decoded.body, offset);
-                            offset += 4;
 
-                            std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << count << std::endl;
+                            std::vector<std::uint8_t> frames_data(decoded.body.begin() + offset, decoded.body.end());
+                            const auto frames = protocol::deserialize_frames(frames_data);
 
-                            if (count > 0) {
-                                const auto frames = protocol::deserialize_frames(decoded.body);
-                                for (const auto& frame : frames) {
-                                    print_frame(frame);
-                                }
+                            std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << frames.size() << std::endl;
+                            for (const auto& frame : frames) {
+                                print_frame(frame);
                             }
                         } catch (const std::exception& e) {
                             std::cout << "\n⚠️ 帧数据解析失败: " << e.what() << ", body_size=" << decoded.body.size() << std::endl;
