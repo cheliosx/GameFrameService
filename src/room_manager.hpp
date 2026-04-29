@@ -3,7 +3,10 @@
 #include <boost/asio.hpp>
 
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -14,7 +17,8 @@ class Session;
 
 class RoomManager {
 public:
-    RoomManager(boost::asio::io_context& io_context, std::uint32_t fps, std::shared_ptr<RedisClient> redis_client);
+    RoomManager(std::uint32_t fps, std::shared_ptr<RedisClient> redis_client, std::size_t num_shards = 4);
+    ~RoomManager();
 
     void join(const std::string& room_id, const std::shared_ptr<Session>& session, int user_id);
     void leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id);
@@ -30,16 +34,19 @@ public:
     std::string server_info() const;
 
 private:
-    void start_room_broadcast(const std::string& room_id);
-    void tick_room_broadcast(const std::string& room_id);
-    void broadcast_with_frame(const std::string& room_id,
-                              std::uint32_t message_id,
-                              ProtocolType protocol_type,
-                              const std::vector<std::uint8_t>& payload);
+    void start_broadcast_shard(std::size_t shard_id);
+    void tick_broadcast_shard(std::size_t shard_id);
+    std::size_t get_shard_id(const std::string& room_id) const;
 
-    boost::asio::io_context& io_context_;
     std::uint32_t frame_interval_ms_;
+    std::size_t num_shards_;
     std::unordered_map<std::string, Room> room_states_;
-    std::unordered_map<std::string, std::shared_ptr<boost::asio::steady_timer>> room_timers_;
+    mutable std::shared_mutex room_states_mutex_;
+
+    std::vector<std::vector<std::string>> shard_room_ids_;
+    std::vector<std::shared_ptr<boost::asio::io_context>> shard_io_contexts_;
+    std::vector<std::shared_ptr<boost::asio::steady_timer>> shard_timers_;
+    std::vector<std::thread> shard_threads_;
+
     std::shared_ptr<RedisClient> redis_client_;
 };

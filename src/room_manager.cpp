@@ -32,12 +32,36 @@ std::string md5_hex(const std::string& text) {
 }
 }
 
-RoomManager::RoomManager(boost::asio::io_context& io_context, std::uint32_t fps, std::shared_ptr<RedisClient> redis_client)
-    : io_context_(io_context),
-      frame_interval_ms_(std::max<std::uint32_t>(1, 1000 / std::max<std::uint32_t>(1, fps))),
-      redis_client_(std::move(redis_client)) {}
+RoomManager::RoomManager(std::uint32_t fps, std::shared_ptr<RedisClient> redis_client, std::size_t num_shards)
+    : frame_interval_ms_(std::max<std::uint32_t>(1, 1000 / std::max<std::uint32_t>(1, fps))),
+      num_shards_(std::max<std::size_t>(1, num_shards)),
+      shard_room_ids_(num_shards_),
+      shard_io_contexts_(num_shards_),
+      shard_timers_(num_shards_),
+      shard_threads_(num_shards_),
+      redis_client_(std::move(redis_client)) {
+    for (std::size_t i = 0; i < num_shards_; ++i) {
+        shard_io_contexts_[i] = std::make_shared<boost::asio::io_context>();
+        start_broadcast_shard(i);
+        shard_threads_[i] = std::thread([this, i] {
+            shard_io_contexts_[i]->run();
+        });
+    }
+}
+
+RoomManager::~RoomManager() {
+    for (std::size_t i = 0; i < num_shards_; ++i) {
+        if (shard_io_contexts_[i]) {
+            shard_io_contexts_[i]->stop();
+        }
+        if (shard_threads_[i].joinable()) {
+            shard_threads_[i].join();
+        }
+    }
+}
 
 void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session>& session, int user_id) {
+    std::unique_lock<std::shared_mutex> lock(room_states_mutex_);
     auto& room = room_states_[room_id];
     room.id = room_id;
     if (room.current_frame.frame_id == 0) {
@@ -47,6 +71,7 @@ void RoomManager::join(const std::string& room_id, const std::shared_ptr<Session
 }
 
 bool RoomManager::verify_join_auth(const std::string& room_id, std::uint64_t timestamp_ms, const std::string& client_md5) {
+    std::unique_lock<std::shared_mutex> lock(room_states_mutex_);
     auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end()) {
         Room room;
@@ -62,76 +87,24 @@ bool RoomManager::verify_join_auth(const std::string& room_id, std::uint64_t tim
 }
 
 void RoomManager::start_game(const std::string& room_id) {
+    std::unique_lock<std::shared_mutex> lock(room_states_mutex_);
     auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end() || room_it->second.game_started) {
         return;
     }
     room_it->second.game_started = true;
-    if (room_timers_.find(room_id) == room_timers_.end()) {
-        start_room_broadcast(room_id);
+
+    const auto shard_id = get_shard_id(room_id);
+    auto& shard_ids = shard_room_ids_[shard_id];
+    if (std::find(shard_ids.begin(), shard_ids.end(), room_id) == shard_ids.end()) {
+        shard_ids.push_back(room_id);
     }
-}
-
-void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
-    auto room_it = room_states_.find(room_id);
-    if (room_it == room_states_.end()) {
-        return;
-    }
-
-    auto& players = room_it->second.players;
-    players.erase(std::remove_if(players.begin(), players.end(), [&](const Player& player) {
-                      return player.user_id == player_id || player.session == session;
-                  }),
-                  players.end());
-
-    if (players.empty()) {
-        room_states_.erase(room_it);
-        auto timer_it = room_timers_.find(room_id);
-        if (timer_it != room_timers_.end()) {
-            timer_it->second->cancel();
-            room_timers_.erase(timer_it);
-        }
-    }
-}
-
-void RoomManager::broadcast_with_frame(const std::string& room_id,
-                                       std::uint32_t message_id,
-                                       ProtocolType protocol_type,
-                                       const std::vector<std::uint8_t>& payload) {
-    auto room_it = room_states_.find(room_id);
-    if (room_it == room_states_.end()) {
-        return;
-    }
-
-    const auto encoded = protocol::encode(message_id, protocol_type, payload);
-    for (const auto& player : room_it->second.players) {
-        if (player.session) {
-            player.session->deliver(encoded);
-        }
-    }
-}
-
-void RoomManager::enqueue_operation(const std::string& room_id,
-                                    std::uint32_t message_id,
-                                    std::uint64_t user_id,
-                                    InfoType info_type,
-                                    const std::vector<std::uint8_t>& payload) {
-    const auto room_it = room_states_.find(room_id);
-    if (room_it == room_states_.end()) {
-        return;
-    }
-
-    auto& operations = room_it->second.current_frame.operations;
-    operations.erase(std::remove_if(operations.begin(), operations.end(), [info_type, user_id](const FrameOperation& op) {
-                         return op.info_type == info_type && op.user_id == user_id;
-                     }),
-                     operations.end());
-    operations.push_back(FrameOperation{message_id, user_id, info_type, payload});
 }
 
 std::vector<Frame> RoomManager::get_frames_after(const std::string& room_id,
                                                  std::uint32_t frame_id,
                                                  std::uint32_t count) const {
+    std::shared_lock<std::shared_mutex> lock(room_states_mutex_);
     std::vector<Frame> result;
     const auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end() || count == 0) {
@@ -150,6 +123,7 @@ std::vector<Frame> RoomManager::get_frames_after(const std::string& room_id,
 }
 
 std::uint32_t RoomManager::get_current_frame_id(const std::string& room_id) const {
+    std::shared_lock<std::shared_mutex> lock(room_states_mutex_);
     const auto room_it = room_states_.find(room_id);
     if (room_it == room_states_.end()) {
         return 0;
@@ -157,61 +131,126 @@ std::uint32_t RoomManager::get_current_frame_id(const std::string& room_id) cons
     return room_it->second.current_frame.frame_id - 1;
 }
 
-void RoomManager::start_room_broadcast(const std::string& room_id) {
-    auto timer = std::make_shared<boost::asio::steady_timer>(io_context_);
-    room_timers_[room_id] = timer;
-    tick_room_broadcast(room_id);
-}
-
-void RoomManager::tick_room_broadcast(const std::string& room_id) {
-    auto timer_it = room_timers_.find(room_id);
-    if (timer_it == room_timers_.end()) {
+void RoomManager::leave(const std::string& room_id, const std::shared_ptr<Session>& session, std::uint64_t player_id) {
+    std::unique_lock<std::shared_mutex> lock(room_states_mutex_);
+    auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
         return;
     }
 
-    auto timer = timer_it->second;
+    auto& players = room_it->second.players;
+    players.erase(std::remove_if(players.begin(), players.end(), [&](const Player& player) {
+                      return player.user_id == player_id || player.session == session;
+                  }),
+                  players.end());
+
+    if (players.empty()) {
+        const auto shard_id = get_shard_id(room_id);
+        auto& shard_ids = shard_room_ids_[shard_id];
+        shard_ids.erase(std::remove(shard_ids.begin(), shard_ids.end(), room_id), shard_ids.end());
+        room_states_.erase(room_it);
+    }
+}
+
+void RoomManager::enqueue_operation(const std::string& room_id,
+                                    std::uint32_t message_id,
+                                    std::uint64_t user_id,
+                                    InfoType info_type,
+                                    const std::vector<std::uint8_t>& payload) {
+    std::unique_lock<std::shared_mutex> lock(room_states_mutex_);
+    const auto room_it = room_states_.find(room_id);
+    if (room_it == room_states_.end()) {
+        return;
+    }
+
+    auto& operations = room_it->second.current_frame.operations;
+    operations.erase(std::remove_if(operations.begin(), operations.end(), [info_type, user_id](const FrameOperation& op) {
+                         return op.info_type == info_type && op.user_id == user_id;
+                     }),
+                     operations.end());
+    operations.push_back(FrameOperation{message_id, user_id, info_type, payload});
+}
+
+std::size_t RoomManager::get_shard_id(const std::string& room_id) const {
+    std::uint32_t hash = 0;
+    for (char c : room_id) {
+        hash = hash * 31 + static_cast<std::uint32_t>(c);
+    }
+    return hash % num_shards_;
+}
+
+void RoomManager::start_broadcast_shard(std::size_t shard_id) {
+    auto timer = std::make_shared<boost::asio::steady_timer>(*shard_io_contexts_[shard_id]);
+    shard_timers_[shard_id] = timer;
+    tick_broadcast_shard(shard_id);
+}
+
+void RoomManager::tick_broadcast_shard(std::size_t shard_id) {
+    auto timer = shard_timers_[shard_id];
+    if (!timer) {
+        return;
+    }
+
     timer->expires_after(std::chrono::milliseconds(frame_interval_ms_));
-    timer->async_wait([this, room_id](const beast::error_code& ec) {
+    timer->async_wait([this, shard_id](const beast::error_code& ec) {
         if (ec) {
             return;
         }
 
-        auto room_it = room_states_.find(room_id);
-        if (room_it == room_states_.end() || !room_it->second.game_started) {
-            return;
-        }
+        std::shared_lock<std::shared_mutex> lock(room_states_mutex_);
+        auto& shard_ids = shard_room_ids_[shard_id];
+        std::vector<std::string> to_remove;
 
-        auto& room = room_it->second;
-        const Frame completed_frame = room.current_frame;
-
-        std::vector<Frame> frames;
-        if (!completed_frame.operations.empty()) {
-            frames.push_back(completed_frame);
-        }
-        const auto current_frame_id = room.current_frame.frame_id - 1;
-        const auto encoded = protocol::encode_replay_response(0, frames, current_frame_id);
-
-        for (const auto& player : room_it->second.players) {
-            if (player.session) {
-                player.session->deliver(encoded);
+        for (const auto& room_id : shard_ids) {
+            auto room_it = room_states_.find(room_id);
+            if (room_it == room_states_.end()) {
+                to_remove.push_back(room_id);
+                continue;
             }
+
+            auto& room = room_it->second;
+            if (!room.game_started) {
+                to_remove.push_back(room_id);
+                continue;
+            }
+
+            const Frame completed_frame = room.current_frame;
+
+            const auto current_frame_id = completed_frame.frame_id;
+            const auto encoded = protocol::encode_replay_response(0, {completed_frame}, current_frame_id);
+
+            for (const auto& player : room.players) {
+                if (player.session) {
+                    player.session->deliver(encoded);
+                }
+            }
+
+            if (!completed_frame.operations.empty()) {
+                room.received_messages.push_back(completed_frame);
+            }
+            room.current_frame.frame_id += 1;
+            room.current_frame.operations.clear();
         }
 
-        if (!completed_frame.operations.empty()) {
-            room.received_messages.push_back(completed_frame);
+        lock.unlock();
+
+        for (const auto& room_id : to_remove) {
+            auto& shard_ids = shard_room_ids_[shard_id];
+            shard_ids.erase(std::remove(shard_ids.begin(), shard_ids.end(), room_id), shard_ids.end());
         }
-        room.current_frame.frame_id += 1;
-        room.current_frame.operations.clear();
-        tick_room_broadcast(room_id);
+
+        tick_broadcast_shard(shard_id);
     });
 }
 
 std::string RoomManager::server_info() const {
+    std::shared_lock<std::shared_mutex> lock(room_states_mutex_);
     std::size_t total_players = 0;
     for (const auto& [room_id, room] : room_states_) {
         (void)room_id;
         total_players += room.players.size();
     }
+    lock.unlock();
 
     struct rusage usage {};
     getrusage(RUSAGE_SELF, &usage);

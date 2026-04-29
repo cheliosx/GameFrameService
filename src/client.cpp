@@ -54,7 +54,7 @@ void print_help() {
     std::cout << "\n========== 命令帮助 ==========" << std::endl;
     std::cout << "1 <内容>     - 发送聊天消息，如: 1 hello" << std::endl;
     std::cout << "2 <x> <y>    - 发送位置，如: 2 10.5 20.3" << std::endl;
-    std::cout << "start_game   - 开始游戏" << std::endl;
+    std::cout << "go   - 开始游戏" << std::endl;
     std::cout << "info         - 获取服务器信息" << std::endl;
     std::cout << "help         - 显示此帮助信息" << std::endl;
     std::cout << "exit         - 退出程序" << std::endl;
@@ -132,20 +132,31 @@ int main() {
                     if (decoded.protocol_type == ProtocolType::SystemInfo) {
                         std::cout << "\n[系统信息] " << protocol::decode_system_info_body(decoded.body) << std::endl;
                     } else if (decoded.protocol_type == ProtocolType::ReplayFrames) {
-                        if (decoded.body.size() < 8) {
-                            std::cout << "\n⚠️ 补帧数据长度不足" << std::endl;
-                            continue;
-                        }
-                        std::size_t offset = 0;
-                        const auto current_frame_id = protocol::read_u32(decoded.body, offset);
-                        offset += 8; // Skip count field
+                        try {
+                            if (decoded.body.size() < 8) {
+                                std::cout << "\n⚠️ 补帧数据长度不足" << std::endl;
+                                continue;
+                            }
+                            std::size_t offset = 0;
+                            const auto current_frame_id = protocol::read_u32(decoded.body, offset);
+                            offset += 4;
 
-                        std::vector<std::uint8_t> frames_data(decoded.body.begin() + offset, decoded.body.end());
-                        const auto frames = protocol::deserialize_frames(frames_data);
+                            std::vector<std::uint8_t> frames_data(decoded.body.begin() + offset, decoded.body.end());
+                            const auto frames = protocol::deserialize_frames(frames_data);
 
-                        std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << frames.size() << std::endl;
-                        for (const auto& frame : frames) {
-                            print_frame(frame);
+                            std::cout << "\n[帧数据] current_frame_id=" << current_frame_id << ", count=" << frames.size() << std::endl;
+                            for (const auto& frame : frames) {
+                                print_frame(frame);
+                            }
+                        } catch (const std::exception& e) {
+                            std::cout << "\n⚠️ 帧数据解析失败: " << e.what() << ", body_size=" << decoded.body.size() << std::endl;
+                            if (decoded.body.size() >= 12) {
+                                std::cout << "  body bytes: ";
+                                for (size_t i = 0; i < std::min(size_t(12), decoded.body.size()); i++) {
+                                    std::cout << static_cast<int>(decoded.body[i]) << " ";
+                                }
+                                std::cout << std::endl;
+                            }
                         }
                     }
                 }
@@ -194,7 +205,7 @@ int main() {
                 continue;
             }
 
-            if (cmd == "start_game") {
+            if (cmd == "go") {
                 const auto start_msg = protocol::encode_game_start(next_message_id++);
                 ws.write(asio::buffer(start_msg));
                 continue;
